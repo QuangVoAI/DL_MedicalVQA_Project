@@ -7,6 +7,14 @@ import torch
 from nltk.translate.bleu_score import SmoothingFunction, sentence_bleu
 from nltk.translate.meteor_score import meteor_score as _nltk_meteor
 
+import nltk
+try:
+    nltk.data.find('corpora/wordnet')
+except LookupError:
+    print("[INFO] Đang tự động tải bộ từ điển NLTK WordNet cho METEOR score...")
+    nltk.download('wordnet', quiet=True)
+    nltk.download('omw-1.4', quiet=True)
+
 # 1. Semantic Score (SentenceTransformer)
 try:
     from sentence_transformers import SentenceTransformer, util
