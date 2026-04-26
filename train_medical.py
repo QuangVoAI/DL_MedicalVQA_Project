@@ -169,9 +169,27 @@ def train(args):
         # Fine-tuning LLaVA-Med (SFT)
         from trl import SFTTrainer
         from transformers import TrainingArguments
+        from torch.utils.data import Dataset as TorchDataset
         
         wrapper = MultimodalVQA(model_id=config['model_b']['model_name'])
         model, processor = wrapper.load_model()
+        
+        # Wrapper dataset: SFTTrainer cần field 'text' dạng string
+        class SFTTextDataset(TorchDataset):
+            def __init__(self, hf_ds):
+                self.data = hf_ds
+            def __len__(self):
+                return len(self.data)
+            def __getitem__(self, idx):
+                item = self.data[idx]
+                q = item.get("question_vi", item.get("question", ""))
+                a = item.get("answer_vi", item.get("answer", ""))
+                text = f"USER: <image>\n{q} ASSISTANT: {a}"
+                return {"text": text}
+        
+        # Lấy raw HF dataset (chưa qua MedicalVQADataset)
+        sft_train = SFTTextDataset(dataset_dict['train'] if hf_repo else train_ds.dataset)
+        sft_val = SFTTextDataset(dataset_dict['validation'] if hf_repo else val_ds.dataset)
         
         training_args = TrainingArguments(
             output_dir="./checkpoints/B2",
@@ -186,8 +204,8 @@ def train(args):
         trainer_kwargs = {
             "model": model,
             "args": training_args,
-            "train_dataset": train_ds,
-            "eval_dataset": val_ds,
+            "train_dataset": sft_train,
+            "eval_dataset": sft_val,
         }
         
         try:
