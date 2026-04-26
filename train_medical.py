@@ -177,28 +177,56 @@ def train(args):
             per_device_train_batch_size=config['train']['batch_size'],
             num_train_epochs=config['train'].get('epochs', 3),
             fp16=True,
-            remove_unused_columns=False
+            remove_unused_columns=False,
+            logging_steps=10
         )
 
-        trainer = SFTTrainer(
-            model=model,
-            args=training_args,
-            train_dataset=train_ds,
-            dataset_text_field="question_vi", # Tùy chỉnh theo dataset
-            tokenizer=processor.tokenizer,
-            packing=False
-        )
+        # Khởi tạo SFTTrainer với cơ chế fallback cho phiên bản TRL
+        trainer_kwargs = {
+            "model": model,
+            "args": training_args,
+            "train_dataset": train_ds,
+            "eval_dataset": val_ds,
+            "packing": False,
+        }
+        
+        try:
+            print("[INFO] Thử khởi tạo SFTTrainer với processing_class...")
+            trainer = SFTTrainer(**trainer_kwargs, processing_class=processor)
+        except TypeError:
+            print("[INFO] Fallback: Thử khởi tạo SFTTrainer với tokenizer...")
+            trainer = SFTTrainer(**trainer_kwargs, tokenizer=processor)
+            
         trainer.train()
         return
 
     elif args.variant == 'B1':
         # Zero-shot Evaluation cho Hướng B
         from src.engine.medical_eval import evaluate_multimodal_vqa
+        from src.utils.translator import MedicalTranslator
+        
+        # Sử dụng Lazy Translator để tối ưu VRAM
+        translator = MedicalTranslator(device=device)
+        
         wrapper = MultimodalVQA(model_id=config['model_b']['model_name'])
         model, processor = wrapper.load_model()
         
-        metrics = evaluate_multimodal_vqa(model, val_loader, device, processor)
-        print(f"[RESULT B1] Accuracy: {metrics.get('vqa_accuracy', 0):.4f}")
+        beam_width = config['eval'].get('beam_width_b', 1)
+        print(f"[INFO] Bắt đầu đánh giá B1 với Beam Width = {beam_width}...")
+        
+        metrics = evaluate_multimodal_vqa(
+            model, 
+            val_loader, 
+            device, 
+            processor, 
+            beam_width=beam_width
+        )
+        
+        print(f"\n[RESULT B1]")
+        print(f"Accuracy: {metrics.get('vqa_accuracy', 0):.4f}")
+        print(f"F1: {metrics.get('f1', 0):.4f}")
+        print(f"BLEU-4: {metrics.get('bleu', 0):.4f}")
+        return
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
