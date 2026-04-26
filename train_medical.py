@@ -133,8 +133,8 @@ def train(args):
             optimizer=optimizer,
             scheduler=scheduler,
             device=device,
-            config=config,
-            pad_token_id=tokenizer.pad_token_id # TRUYỀN pad_token_id=1 CỦA PHOBERT
+            config={**config, 'variant': args.variant},
+            pad_token_id=tokenizer.pad_token_id
         )
 
         print(f"[INFO] Bắt đầu huấn luyện cấu hình {args.variant}...")
@@ -161,6 +161,7 @@ def train(args):
             config=config
         )
         trainer.train(epochs=config['train'].get('dpo_epochs', 3))
+        os.makedirs("checkpoints", exist_ok=True)
         torch.save(model.state_dict(), f"checkpoints/medical_vqa_dpo.pth")
         return
 
@@ -203,10 +204,6 @@ def train(args):
     elif args.variant == 'B1':
         # Zero-shot Evaluation cho Hướng B
         from src.engine.medical_eval import evaluate_multimodal_vqa
-        from src.utils.translator import MedicalTranslator
-        
-        # Sử dụng Lazy Translator để tối ưu VRAM
-        translator = MedicalTranslator(device=device)
         
         wrapper = MultimodalVQA(model_id=config['model_b']['model_name'])
         model, processor = wrapper.load_model()
@@ -223,9 +220,9 @@ def train(args):
         )
         
         print(f"\n[RESULT B1]")
-        print(f"Accuracy: {metrics.get('vqa_accuracy', 0):.4f}")
+        print(f"Accuracy: {metrics.get('accuracy', metrics.get('vqa_accuracy', 0)):.4f}")
         print(f"F1: {metrics.get('f1', 0):.4f}")
-        print(f"BLEU-4: {metrics.get('bleu', 0):.4f}")
+        print(f"BLEU-4: {metrics.get('bleu4', 0):.4f}")
         return
 
 if __name__ == "__main__":
