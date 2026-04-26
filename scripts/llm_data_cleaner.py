@@ -36,7 +36,7 @@ def call_qwen(en_q, en_a):
         r = requests.post(OLLAMA_URL, json=payload, timeout=60)
         return json.loads(r.json().get("response", "{}"))
     except Exception as e:
-        print(f"⚠️ Lỗi Qwen: {e}")
+        print(f"[WARNING] Lỗi Qwen: {e}")
         return None
 
 def main():
@@ -47,7 +47,7 @@ def main():
     with open(INPUT_FILE, "r", encoding="utf-8") as f:
         data = json.load(f)
 
-    print(f"🚀 Đang bắt đầu làm sạch dữ liệu bằng {MODEL_NAME}...")
+    print(f"[INFO] Đang bắt đầu làm sạch dữ liệu bằng {MODEL_NAME}...")
     
     # Chỉ xử lý các mẫu cần thiết hoặc bạn có thể chọn một khoảng cụ thể
     # Ở đây tôi sẽ demo xử lý các mẫu mà bạn cảm thấy chưa ổn
@@ -68,7 +68,7 @@ def main():
     with open(INPUT_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
     
-    print("✅ Đã làm sạch dữ liệu thành công bằng Qwen!")
+    print("[SUCCESS] Đã làm sạch dữ liệu thành công bằng Qwen!")
 
 if __name__ == "__main__":
     main()

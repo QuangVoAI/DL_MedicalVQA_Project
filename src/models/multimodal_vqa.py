@@ -29,7 +29,7 @@ class MultimodalVQA:
         )
 
     def load_model(self):
-        print(f"🚀 Đang tải LLaVA-Med-v1.5-7B với chế độ 4-bit...")
+        print(f"[INFO] Đang tải LLaVA-Med-v1.5-7B với chế độ 4-bit...")
         processor = LlavaProcessor.from_pretrained(self.model_id)
         model = LlavaForConditionalGeneration.from_pretrained(
             self.model_id,

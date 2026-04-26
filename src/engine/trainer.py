@@ -1,3 +1,4 @@
+import wandb
 import torch
 import torch.nn as nn
 from tqdm import tqdm
@@ -59,6 +60,7 @@ class Trainer:
             self.scaler.update()
             
             total_loss += loss.item()
+            if wandb.run: wandb.log({"batch_loss": loss.item()})
             pbar.set_postfix({"loss": loss.item(), "lr": self.optimizer.param_groups[0]['lr']})
             
         # Step scheduler sau mỗi epoch
@@ -78,7 +80,17 @@ class Trainer:
         metrics = evaluate_vqa(self.model, self.val_loader, self.device, tokenizer, beam_width=beam_width)
         
         # In các metrics quan trọng
-        print(f"📊 Accuracy: {metrics['accuracy']:.4f} | F1: {metrics['f1']:.4f} | BLEU-4: {metrics['bleu4']:.4f}")
+        print(f"[METRICS] Accuracy: {metrics['accuracy']:.4f} | F1: {metrics['f1']:.4f} | BLEU-4: {metrics['bleu4']:.4f}")
+        
+        if wandb.run:
+            wandb.log({
+                "epoch": epoch if "epoch" in locals() else 0,
+                "val_accuracy": metrics["accuracy"],
+                "val_f1": metrics["f1"],
+                "val_bleu4": metrics["bleu4"],
+                "val_bert_score": metrics.get("bert_score", 0)
+            })
+
         return metrics
 
     def train(self, epochs, tokenizer=None):

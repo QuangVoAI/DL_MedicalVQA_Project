@@ -34,7 +34,7 @@ def create_preference_data(vqa_json_path, output_path, num_pairs=200):
     with open(output_path, 'w', encoding='utf-8') as f:
         json.dump(pref_data, f, ensure_ascii=False, indent=2)
     
-    print(f"✅ Đã tạo {len(pref_data)} cặp preference dữ liệu tại {output_path}")
+    print(f"[SUCCESS] Đã tạo {len(pref_data)} cặp preference dữ liệu tại {output_path}")
     return pref_data
 
 class MedicalDPOTrainer:
@@ -82,7 +82,7 @@ class MedicalDPOTrainer:
         return loss, chosen_rewards, rejected_rewards
 
     def train(self, epochs=3):
-        print(f"🧠 Bắt đầu huấn luyện DPO (beta={self.beta})...")
+        print(f"[INFO] Bắt đầu huấn luyện DPO (beta={self.beta})...")
         self.model.train()
         self.reference_model.eval() # Model tham chiếu luôn ở chế độ eval
         
