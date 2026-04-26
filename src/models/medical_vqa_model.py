@@ -39,23 +39,23 @@ class MedicalVQAModelA(nn.Module):
     Kiến trúc rời (Hướng A) cho Medical VQA Tiếng Việt.
     Sử dụng DenseNet-121 (XRV) + PhoBERT + Co-Attention + Dual-Head Decoder.
     """
-    def __init__(self, decoder_type="transformer", vocab_size=30000):
+    def __init__(self, decoder_type="transformer", vocab_size=30000, hidden_size=768, phobert_model=None, **kwargs):
         super(MedicalVQAModelA, self).__init__()
         
         # 1. Image Encoder (DenseNet-121 XRV)
         self.image_encoder = MedicalImageEncoder(pretrained=True)
         
         # 2. Text Encoder (PhoBERT)
-        self.text_encoder = PhoBERTEncoder()
+        self.text_encoder = PhoBERTEncoder(model_name=phobert_model) if phobert_model else PhoBERTEncoder()
         
         # 3. Fusion Layer (Co-Attention Fusion)
-        self.fusion = CoAttentionFusion(hidden_size=768, nhead=8)
+        self.fusion = CoAttentionFusion(hidden_size=hidden_size, nhead=8)
         
         # 4. Decoder (LSTM / Transformer)
         self.decoder = MedicalVQADecoder(
             decoder_type=decoder_type, 
             vocab_size=vocab_size,
-            hidden_size=768
+            hidden_size=hidden_size
         )
 
     def forward(self, images, input_ids, attention_mask, target_ids=None, beam_width=1):
