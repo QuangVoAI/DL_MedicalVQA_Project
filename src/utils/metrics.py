@@ -52,8 +52,12 @@ def compute_bertscore(preds: list[str], refs: list) -> float:
     clean_preds = [normalize_answer(p) for p in preds]
     clean_refs = [majority_answer(r) if isinstance(r, list) else normalize_answer(r) for r in refs]
     
-    P, R, F1 = bert_scorer.score(clean_preds, clean_refs)
-    return float(F1.mean().item())
+    try:
+        P, R, F1 = bert_scorer.score(clean_preds, clean_refs)
+        return float(F1.mean().item())
+    except Exception as e:
+        print(f"[WARNING] BERTScore error: {e}")
+        return 0.0
 
 def compute_exact_match(pred: str, refs) -> float:
     """So khớp chính xác lấy MAX (soft match over multiple refs)."""
