@@ -1,0 +1,82 @@
+import torch
+import torch.nn as nn
+from tqdm import tqdm
+
+class MedicalVQATrainer:
+    def __init__(self, model, train_loader, val_loader, optimizer, device, config, scheduler=None, pad_token_id=0):
+        self.model = model
+        self.train_loader = train_loader
+        self.val_loader = val_loader
+        self.optimizer = optimizer
+        self.scheduler = scheduler
+        self.device = device
+        self.config = config
+        
+        self.criterion_closed = nn.CrossEntropyLoss()
+        self.criterion_open = nn.CrossEntropyLoss(ignore_index=pad_token_id)
+        
+        # AMP (Automatic Mixed Precision)
+        self.use_amp = config['train'].get('use_amp', False) and device.type == 'cuda'
+        self.scaler = torch.cuda.amp.GradScaler(enabled=self.use_amp)
+
+    def train_epoch(self, epoch):
+        self.model.train()
+        total_loss = 0
+        pbar = tqdm(self.train_loader, desc=f"Epoch {epoch}")
+        
+        for batch in pbar:
+            images = batch['image'].to(self.device)
+            input_ids = batch['input_ids'].to(self.device)
+            attention_mask = batch['attention_mask'].to(self.device)
+            label_closed = batch['label_closed'].to(self.device)
+            target_ids = batch['target_ids'].to(self.device)
+            
+            self.optimizer.zero_grad()
+            
+            # Sử dụng AMP Autocast
+            with torch.cuda.amp.autocast(enabled=self.use_amp):
+                logits_closed, logits_open = self.model(images, input_ids, attention_mask, target_ids)
+                
+                # Loss calculation
+                loss = 0
+                mask_closed = (label_closed != -1)
+                if mask_closed.any():
+                    loss += self.criterion_closed(logits_closed[mask_closed], label_closed[mask_closed])
+                
+                # Loss generator (Open-ended)
+                vocab_size = logits_open.size(-1)
+                loss += self.criterion_open(logits_open.view(-1, vocab_size), target_ids.view(-1))
+            
+            # Backward với GradScaler
+            self.scaler.scale(loss).backward()
+            
+            # Gradient Clipping
+            if self.config['train'].get('grad_clip'):
+                self.scaler.unscale_(self.optimizer)
+                nn.utils.clip_grad_norm_(self.model.parameters(), self.config['train']['grad_clip'])
+            
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+            
+            total_loss += loss.item()
+            pbar.set_postfix({"loss": loss.item(), "lr": self.optimizer.param_groups[0]['lr']})
+            
+        # Step scheduler sau mỗi epoch
+        if self.scheduler:
+            self.scheduler.step()
+            
+        return total_loss / len(self.train_loader)
+
+
+    def val_epoch(self, tokenizer):
+        """
+        Thực hiện đánh giá trên tập Validation sau mỗi Epoch.
+        """
+        from src.engine.medical_eval import evaluate_vqa
+        print("\n🔍 Đang chạy Validation...")
+        beam_width = self.config['train'].get('beam_width', 1)
+        metrics = evaluate_vqa(self.model, self.val_loader, self.device, tokenizer, beam_width=beam_width)
+        
+        # In các metrics quan trọng
+        print(f"📊 Accuracy: {metrics['accuracy']:.4f} | F1: {metrics['f1']:.4f} | BLEU-4: {metrics['bleu4']:.4f}")
+        return metrics

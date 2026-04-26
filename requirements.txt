@@ -1,0 +1,34 @@
+# Deep Learning Framework
+torch>=2.0.0
+torchvision>=0.15.0
+torchxrayvision>=1.1.0
+
+# Data Processing
+numpy>=1.24.0
+Pillow>=9.5.0
+
+# NLP & HuggingFace
+transformers>=4.30.0
+huggingface_hub>=0.16.0
+datasets>=2.14.0
+sentencepiece>=0.1.99
+accelerate>=0.20.0
+underthesea>=6.0.0
+bitsandbytes>=0.40.0
+peft>=0.4.0
+trl>=0.7.1
+
+# NLP Metrics
+nltk>=3.8.0
+bert-score>=0.3.13
+rouge-score>=0.1.2
+
+# Progress & Visualization
+tqdm>=4.65.0
+matplotlib>=3.7.0
+
+# Configuration
+pyyaml>=6.0
+
+# Statistical Testing (multi-seed significance)
+scipy>=1.10.0

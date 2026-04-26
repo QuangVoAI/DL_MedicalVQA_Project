@@ -1,0 +1,100 @@
+# ═══════════════════════════════════════════════════════════════════
+# Medical VQA — SLAKE + VQA-RAD (Merged) Configuration
+# Pipeline: Dictionary-Enhanced Translation → ResNet50+PhoBERT → A1/A2/B1/B2
+# ═══════════════════════════════════════════════════════════════════
+
+seed: 42
+device: "auto"          # auto | cuda | mps | cpu
+log_dir: "logs/medical_vqa"
+ckpt_dir: "checkpoints/medical_vqa"
+
+# ── Data ──
+data:
+  dataset_name: "slake_vqa_rad_merged"
+  hf_dataset: "SpringWang08/medical-vqa-vi"        # [NEW] Dataset trên Hub
+  vqa_json: "data/merged_vqa_vi_cleaned.json"
+  image_dir: "data/images"
+  manual_test_json: "data/manual_test_set.json" # 50+ mẫu test thủ công (bắt buộc)
+  train_ratio: 0.80
+  val_ratio: 0.10
+  test_ratio: 0.10
+  image_size: 224
+  max_question_len: 64      # PhoBERT max tokens
+  max_answer_len: 10        # [FIX] Câu trả lời ≤ 10 từ theo đề bài (sửa từ 20)
+
+# ── Hướng A: Kiến trúc rời (Modular Architecture) ──
+model_a:
+  image_encoder: "densenet121_xrv"     # [FIX] Đổi từ resnet50 sang DenseNet-121 (XRV) y tế
+  text_encoder: "phobert"             # vinai/phobert-base
+  phobert_model: "vinai/phobert-base"
+  freeze_phobert_layers: 10           # Đóng băng 10/12 lớp đầu
+  hidden_size: 256
+  num_decoder_layers: 2
+  dropout: 0.3
+  fusion: "co_attention"               # [UPGRADE] concat → co_attention (Kim et al., NeurIPS 2018)
+
+  # Decoder configs (A1 = lstm, A2 = transformer)
+  decoder_type: "lstm"                # "lstm" hoặc "transformer"
+  # Transformer Decoder specific
+  transformer_heads: 8
+  transformer_ff_dim: 1024
+  transformer_decoder_layers: 4
+
+# ── Hướng B: Multimodal Pretrained ──
+model_b:
+  model_name: "microsoft/llava-med-v1.5-7b"  # Sửa từ PaliGemma sang LLaVA-Med để khớp với code
+  use_lora: true
+  lora_r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  lora_target_modules: ["q_proj", "v_proj", "k_proj", "o_proj"]
+
+# ── DPO (Reinforcement Learning) ──
+dpo:
+  preference_data: "data/preference_data_slake.json"  # [FIX] Đổi path cho SLAKE format
+  beta: 0.1                           # DPO temperature
+  num_epochs: 3
+  learning_rate: 5.0e-6
+
+# ── Training ──
+train:
+  epochs: 30
+  batch_size: 16
+  learning_rate: 3.0e-4
+  phobert_lr: 1.0e-5                  # LR riêng cho PhoBERT (nhỏ hơn 30x)
+  label_smoothing: 0.1
+  grad_clip: 5.0
+  patience: 10
+  warmup_epochs: 3
+  scheduler: "cosine"
+  eta_min: 1.0e-6
+  eval_every: 2
+  use_amp: true
+  num_workers: 0                      # macOS safe
+  pin_memory: false
+
+# ── Evaluation ──
+eval:
+  beam_width: 5
+  metrics: ["vqa_accuracy", "bleu", "rouge_l", "meteor", "bertscore"]
+  llm_judge: true
+  llm_judge_model: "gemini-1.5-flash" # API model for LLM-as-a-judge
+
+# ── Model Variants (Bắt buộc 4 cấu hình) ──
+model_variants:
+  A1_LSTM_Decoder:
+    direction: "A"
+    decoder_type: "lstm"
+    description: "Hướng A với LSTM decoder"
+  A2_Transformer_Decoder:
+    direction: "A"
+    decoder_type: "transformer"
+    description: "Hướng A với Transformer decoder"
+  B1_ZeroShot:
+    direction: "B"
+    fine_tuned: false
+    description: "Hướng B zero-shot"
+  B2_FineTuned:
+    direction: "B"
+    fine_tuned: true
+    description: "Hướng B fine-tuned"
