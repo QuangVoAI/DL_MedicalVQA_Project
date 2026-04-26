@@ -58,6 +58,9 @@ class MedicalVQADataset(Dataset):
 
         if self.transform:
             image = self.transform(image)
+        else:
+            from torchvision import transforms
+            image = transforms.ToTensor()(image)
             
         # 2. Xử lý câu hỏi
         q_key = "question" if self.is_dpo else "question_vi"
@@ -81,7 +84,6 @@ class MedicalVQADataset(Dataset):
             
             return {
                 "image": image,
-                "raw_images": raw_image, # Cho Multimodal Processor (Đã có CLAHE)
                 "raw_questions": raw_question,
                 "input_ids": encoding["input_ids"].flatten(),
                 "chosen_ids": chosen_encoding["input_ids"].flatten(),
@@ -102,7 +104,6 @@ class MedicalVQADataset(Dataset):
         
         return {
             "image": image,
-            "raw_images": raw_image, # Cho Multimodal Processor (Đã có CLAHE)
             "raw_questions": raw_question,
             "input_ids": encoding["input_ids"].flatten(),
             "attention_mask": encoding["attention_mask"].flatten(),
