@@ -101,9 +101,31 @@ class MedicalVQATrainer:
         return metrics
 
     def train(self, epochs, tokenizer=None):
+        best_val_acc = 0.0
+        patience = self.config['train'].get('patience', 10)
+        counter = 0
+        ckpt_dir = "checkpoints"
+        os.makedirs(ckpt_dir, exist_ok=True)
+        
         print(f"[INFO] Bắt đầu huấn luyện trong {epochs} epochs...")
         for epoch in range(1, epochs + 1):
             train_loss = self.train_epoch(epoch)
             metrics = self.val_epoch(tokenizer, epoch=epoch)
-            # Scheduler đã được step trong train_epoch, không cần step ở đây nữa.
+            
+            val_acc = metrics.get('accuracy', 0)
+            
+            # Kiểm tra và Lưu Best Checkpoint
+            if val_acc > best_val_acc:
+                best_val_acc = val_acc
+                counter = 0
+                variant = self.config.get('variant', 'A')
+                save_path = os.path.join(ckpt_dir, f"medical_vqa_{variant}_best.pth")
+                torch.save(self.model.state_dict(), save_path)
+                print(f"🌟 Best model saved with Accuracy: {val_acc:.4f}")
+            else:
+                counter += 1
+                if counter >= patience:
+                    print(f"🛑 Early stopping tại epoch {epoch}!")
+                    break
+                    
         print("[INFO] Huấn luyện hoàn tất.")

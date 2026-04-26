@@ -84,10 +84,15 @@ class MedicalDPOTrainer:
     def train(self, epochs=3):
         print(f"[INFO] Bắt đầu huấn luyện DPO (beta={self.beta})...")
         self.model.train()
-        self.reference_model.eval() # Model tham chiếu luôn ở chế độ eval
-        
+        self.reference_model.eval()
+        # Freeze reference model để tiết kiệm VRAM (Quan trọng cho T4)
+        for param in self.reference_model.parameters():
+            param.requires_grad_(False)
+            
+        print(f"[INFO] DPO Trainer Ready ({self.device})")
+
         for epoch in range(epochs):
-            total_loss = 0
+            self.model.train()
             pbar = tqdm(self.train_loader, desc=f"DPO Epoch {epoch+1}")
             
             for batch in pbar:
@@ -95,22 +100,28 @@ class MedicalDPOTrainer:
                 chosen_ids = batch['chosen_ids'].to(self.device)
                 rejected_ids = batch['rejected_ids'].to(self.device)
                 
-                # 1. Forward Policy Model
-                if hasattr(self.model, 'forward_multimodal'): # Giả sử cách gọi cho Multimodal
-                    # LLaVA case
-                    logits_w = self.model(pixel_values=images, input_ids=chosen_ids).logits
-                    logits_l = self.model(pixel_values=images, input_ids=rejected_ids).logits
-                else:
-                    # Modular case
+                # Tính Logits cho Chosen và Rejected (Sử dụng Duck Typing/Safe Forward)
+                try:
+                    # Case: LLaVA-style multimodal model
+                    outputs_w = self.model(input_ids=chosen_ids, pixel_values=images, labels=chosen_ids)
+                    outputs_l = self.model(input_ids=rejected_ids, pixel_values=images, labels=rejected_ids)
+                    logits_w = outputs_w.logits
+                    logits_l = outputs_l.logits
+                except Exception:
+                    # Fallback: Modular model (A1/A2 style)
                     _, logits_w = self.model(images, chosen_ids)
                     _, logits_l = self.model(images, rejected_ids)
                 
-                # 2. Forward Reference Model (no_grad)
+                # 2. Forward Reference Model (No Grad)
                 with torch.no_grad():
-                    if hasattr(self.reference_model, 'forward_multimodal'):
-                        ref_logits_w = self.reference_model(pixel_values=images, input_ids=chosen_ids).logits
-                        ref_logits_l = self.reference_model(pixel_values=images, input_ids=rejected_ids).logits
-                    else:
+                    try:
+                        # Multimodal case
+                        outputs_ref_w = self.reference_model(input_ids=chosen_ids, pixel_values=images, labels=chosen_ids)
+                        outputs_ref_l = self.reference_model(input_ids=rejected_ids, pixel_values=images, labels=rejected_ids)
+                        ref_logits_w = outputs_ref_w.logits
+                        ref_logits_l = outputs_ref_l.logits
+                    except Exception:
+                        # Modular case
                         _, ref_logits_w = self.reference_model(images, chosen_ids)
                         _, ref_logits_l = self.reference_model(images, rejected_ids)
                 

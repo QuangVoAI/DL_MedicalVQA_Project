@@ -49,7 +49,7 @@ def train(args):
     tokenizer = AutoTokenizer.from_pretrained(config['model_a']['phobert_model'])
     transform = MedicalTransform(size=config['data']['image_size'])
     
-    # [FIX] Logic nạp dữ liệu: Ưu tiên Hub nếu có hf_dataset
+    # Logic nạp dữ liệu: Ưu tiên Hub nếu có hf_dataset
     hf_repo = config['data'].get('hf_dataset')
     if hf_repo:
         print(f"[INFO] Đang tải dữ liệu từ Hub: {hf_repo}")
@@ -111,7 +111,7 @@ def train(args):
         test_size = len(full_dataset) - train_size - val_size
         train_ds, val_ds, test_ds = random_split(full_dataset, [train_size, val_size, test_size])
     
-    # [FIX] Cập nhật DataLoader với collate_fn
+    # Cập nhật DataLoader với collate_fn
     train_loader = DataLoader(
         train_ds, 
         batch_size=config['train']['batch_size'], 
@@ -140,7 +140,7 @@ def train(args):
             phobert_model=config['model_a'].get('phobert_model', "vinai/phobert-base")
         ).to(device)
         
-        # 3.1. Tách parameter groups cho PhoBERT (Fine-tune nhẹ) và Decoder (Train mạnh)
+        # Tách parameter groups cho PhoBERT (Fine-tune nhẹ) và Decoder (Train mạnh)
         phobert_params = []
         other_params = []
         for name, param in model.named_parameters():
@@ -154,12 +154,11 @@ def train(args):
             {"params": other_params, "lr": float(config['train']['learning_rate'])}
         ])
         print(f"[INFO] Differential LR: PhoBERT ({config['train'].get('phobert_lr', 1e-5)}) | Other ({config['train']['learning_rate']})")
+    
     elif args.variant in ['B1', 'B2']:
         # Hướng B: Multimodal Pretrained (LLaVA-Med)
         wrapper = MultimodalVQA(model_id=config['model_b']['model_name'])
         model, processor = wrapper.load_model()
-        # Đối với Hướng B, chúng ta thường dùng Trainer của Transformers (SFTTrainer)
-        # Nhưng ở đây ta chuẩn bị model để sẵn sàng cho loop
         optimizer = optim.AdamW(model.parameters(), lr=float(config['model_b'].get('learning_rate', 5e-5)))
     
     elif args.variant == 'DPO':
@@ -211,23 +210,54 @@ def train(args):
         )
         trainer.train(epochs=config['train'].get('dpo_epochs', 3))
         
-        # Lưu checkpoint DPO
+        # [FIX 1] Thêm lệnh return để chặn luồng chạy rơi tự do xuống khối A1/A2
         os.makedirs("checkpoints", exist_ok=True)
         torch.save(model.state_dict(), f"checkpoints/medical_vqa_dpo.pth")
         print(f"[SUCCESS] Đã lưu checkpoint DPO: checkpoints/medical_vqa_dpo.pth")
+        return
 
-    # 3. Chạy Zero-shot / Eval cho Hướng B (LLaVA-Med)
+    # [FIX 3] Đưa khối SFTTrainer của B2 lên trước khối Đánh giá (Eval)
+    if args.variant == 'B2':
+        print("[INFO] Đang khởi tạo SFTTrainer cho B2 (Fine-tuning LLaVA-Med)...")
+        from trl import SFTTrainer
+        from transformers import TrainingArguments
+        
+        training_args = TrainingArguments(
+            output_dir="./checkpoints/B2",
+            per_device_train_batch_size=config['train']['batch_size'],
+            learning_rate=float(config['model_b'].get('learning_rate', 2e-5)),
+            num_train_epochs=config['train'].get('epochs', 3), # Fix bug thiếu tham số 'train'
+            logging_steps=10,
+            save_strategy="epoch",
+            remove_unused_columns=False,
+            fp16=True,
+        )
+
+        def formatting_func(example):
+             return [f"USER: <image>\n{q} ASSISTANT: {a}" for q, a in zip(example['raw_questions'], example['raw_answer'])]
+
+        trainer = SFTTrainer(
+            model=model,
+            args=training_args,
+            train_dataset=train_ds,
+            eval_dataset=val_ds,
+            tokenizer=processor.tokenizer,
+            packing=False,
+        )
+        trainer.train()
+        print("[SUCCESS] Đã hoàn thành Fine-tuning B2.")
+
+    # 4. Chạy Zero-shot / Eval cho Hướng B (B1 và B2 sau khi đã fine-tune)
     if args.variant in ['B1', 'B2']:
         from src.engine.medical_eval import evaluate_multimodal_vqa
         from src.models.multimodal_vqa import MedicalMultimodalVQA
         from src.utils.translator import MedicalTranslator
         
         print(f"[INFO] Bắt đầu đánh giá biến thể {args.variant} (LLaVA-Med)...")
-        # Load Translator (MedCrab-1.5B)
         translator = MedicalTranslator(device=device)
         
-        # Load Model & Processor
-        model_wrapper = MedicalMultimodalVQA(model_id=config['model_b']['model_id'], device=device)
+        # [FIX 2] Sửa 'model_id' thành 'model_name' để khớp với biến trong file YAML
+        model_wrapper = MedicalMultimodalVQA(model_id=config['model_b']['model_name'], device=device)
         beam_width = config['eval'].get('beam_width_b', 1)
         
         print(f"[INFO] Sử dụng Beam Width = {beam_width} cho Hướng B")
@@ -247,13 +277,13 @@ def train(args):
         return
 
     # --- Hướng A: Huấn luyện Modular Models (A1, A2) ---
-    beam_width = config['eval'].get('beam_width_a', 5)
-    print(f"[INFO] Sử dụng Beam Width = {beam_width} cho Hướng A")
-    
     if args.variant in ['A1', 'A2']:
+        beam_width = config['eval'].get('beam_width_a', 5)
+        print(f"[INFO] Sử dụng Beam Width = {beam_width} cho Hướng A")
+        
+        # Gom chung vòng lặp logic (đã xóa đoạn return sớm dư thừa ở code cũ)
         from src.engine.trainer import MedicalVQATrainer
         
-        # Optimizer riêng biệt cho từng thành phần
         optimizer = optim.AdamW([
             {'params': model.image_encoder.parameters(), 'lr': float(config['train']['vision_lr'])},
             {'params': model.text_encoder.parameters(), 'lr': float(config['train']['phobert_lr'])},
@@ -261,106 +291,48 @@ def train(args):
             {'params': model.decoder.parameters(), 'lr': float(config['train']['learning_rate'])}
         ])
         
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, 
+            T_max=config['train']['epochs'],
+            eta_min=float(config['train'].get('eta_min', 1e-6))
+        )
+        
         trainer = MedicalVQATrainer(
             model=model,
             train_loader=train_loader,
             val_loader=val_loader,
             optimizer=optimizer,
+            scheduler=scheduler,
             device=device,
             config=config,
-            beam_width=beam_width
+            pad_token_id=tokenizer.pad_token_id
         )
-        
+
         print(f"[INFO] Bắt đầu huấn luyện cấu hình {args.variant}...")
-        trainer.train(epochs=config['train']['epochs'], tokenizer=tokenizer)
-        return
-
-    elif args.variant == 'B2':
-        # B2: Fine-tune sử dụng SFTTrainer (trl)
-        # ... logic SFTTrainer hiện tại ...
-        print("[INFO] Đang khởi tạo SFTTrainer cho B2 (Fine-tuning LLaVA-Med)...")
-        from trl import SFTTrainer
-        from transformers import TrainingArguments
+        best_val_acc = 0
+        patience = config['train'].get('patience', 3)
+        counter = 0
         
-        training_args = TrainingArguments(
-            output_dir="./checkpoints/B2",
-            per_device_train_batch_size=config['train']['batch_size'],
-            learning_rate=float(config['model_b'].get('learning_rate', 2e-5)),
-            num_train_epochs=config.get('epochs', 3),
-            logging_steps=10,
-            save_strategy="epoch",
-            remove_unused_columns=False,
-            fp16=True,
-        )
+        for epoch in range(config['train'].get('epochs', 10)):
+            train_loss = trainer.train_epoch(epoch + 1)
+            val_metrics = trainer.val_epoch(tokenizer, epoch=epoch + 1)
+            val_acc = val_metrics['accuracy']
+            
+            if val_acc > best_val_acc:
+                best_val_acc = val_acc
+                counter = 0
+                os.makedirs("checkpoints", exist_ok=True)
+                torch.save(model.state_dict(), f"checkpoints/medical_vqa_{args.variant}_best.pth")
+                print(f"[SUCCESS] Epoch {epoch+1}: Đã lưu model tốt nhất mới (Acc: {val_acc:.4f})")
+            else:
+                counter += 1
+                if counter >= patience:
+                    print(f"[STOP] Early stopping tại epoch {epoch+1} do Accuracy không cải thiện.")
+                    break
 
-        def formatting_func(example):
-             # Định dạng lại dữ liệu cho SFTTrainer
-             return [f"USER: <image>\n{q} ASSISTANT: {a}" for q, a in zip(example['raw_questions'], example['raw_answer'])]
-
-        trainer = SFTTrainer(
-            model=model,
-            args=training_args,
-            train_dataset=train_ds,
-            eval_dataset=val_ds,
-            tokenizer=processor.tokenizer,
-            # SFTTrainer sẽ tự động xử lý pixel_values nếu ta config đúng
-            packing=False,
-        )
-        trainer.train()
-        print("[SUCCESS] Đã hoàn thành Fine-tuning B2.")
-        return
-
-    # 4. Sử dụng Trainer chuyên nghiệp cho Variant A (A1, A2)
-    from src.engine.trainer import MedicalVQATrainer
-    
-    # Khởi tạo Scheduler (Cosine Annealing)
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, 
-        T_max=config['train']['epochs'],
-        eta_min=float(config['train'].get('eta_min', 1e-6))
-    )
-    
-    trainer = MedicalVQATrainer(
-        model=model,
-        train_loader=train_loader,
-        val_loader=val_loader,
-        optimizer=optimizer,
-        scheduler=scheduler,
-        device=device,
-        config=config,
-        pad_token_id=tokenizer.pad_token_id
-    )
-
-    # 5. Vòng lặp huấn luyện (A1, A2)
-    print(f"[INFO] Bắt đầu huấn luyện cấu hình {args.variant}...")
-    best_val_acc = 0
-    patience = config['train'].get('patience', 3)
-    counter = 0
-    
-    for epoch in range(config['train'].get('epochs', 10)):
-        train_loss = trainer.train_epoch(epoch + 1)
-        
-        # Bước Validation
-        val_metrics = trainer.val_epoch(tokenizer, epoch=epoch + 1)
-        val_acc = val_metrics['accuracy']
-        
-        # Early Stopping & Lưu Model tốt nhất
-        if val_acc > best_val_acc:
-            best_val_acc = val_acc
-            counter = 0
-            os.makedirs("checkpoints", exist_ok=True)
-            torch.save(model.state_dict(), f"checkpoints/medical_vqa_{args.variant}_best.pth")
-            print(f"[SUCCESS] Epoch {epoch+1}: Đã lưu model tốt nhất mới (Acc: {val_acc:.4f})")
-        else:
-            counter += 1
-            if counter >= patience:
-                print(f"[STOP] Early stopping tại epoch {epoch+1} do Accuracy không cải thiện.")
-                break
-
-    # 6. Lưu Checkpoint cuối cùng
-    os.makedirs("checkpoints", exist_ok=True)
-    torch.save(model.state_dict(), f"checkpoints/medical_vqa_{args.variant}_final.pth")
-    print(f"[SUCCESS] Đã hoàn thành huấn luyện {args.variant}.")
+        os.makedirs("checkpoints", exist_ok=True)
+        torch.save(model.state_dict(), f"checkpoints/medical_vqa_{args.variant}_final.pth")
+        print(f"[SUCCESS] Đã hoàn thành huấn luyện {args.variant}.")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

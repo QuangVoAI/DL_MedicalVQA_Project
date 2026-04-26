@@ -51,15 +51,7 @@ class MedicalVQADataset(Dataset):
             mode = "L" if self.in_channels == 1 else "RGB"
             image = Image.open(img_path).convert(mode)
             
-        # [UPGRADE] Tích hợp CLAHE ngay trong Dataset để đảm bảo cả Hướng A và B đều được hưởng lợi
-        from src.utils.visualization import apply_clahe
-        import numpy as np
-        
-        image_np = np.array(image)
-        image_clahe = apply_clahe(image_np)
-        # Chuyển ngược lại PIL để đồng nhất đầu vào cho các bước sau
-        image = Image.fromarray((image_clahe * 255).astype(np.uint8))
-        raw_image = image # Bản lưu trữ cho Multimodal Processor (đã có CLAHE, chưa Normalize)
+        raw_image = image # Bản lưu trữ cho Multimodal Processor (chưa Normalize)
 
         if self.transform:
             image = self.transform(image)
@@ -95,6 +87,7 @@ class MedicalVQADataset(Dataset):
                 "raw_questions": raw_question,
                 "raw_questions_en": raw_question_en,
                 "input_ids": encoding["input_ids"].flatten(),
+                "attention_mask": encoding["attention_mask"].flatten(),
                 "chosen_ids": chosen_encoding["input_ids"].flatten(),
                 "rejected_ids": rejected_encoding["input_ids"].flatten(),
             }

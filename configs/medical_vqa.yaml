@@ -59,7 +59,7 @@ dpo:
 # ── Training ──
 train:
   epochs: 50                          # Tăng lên 50 để đảm bảo hội tụ (có Early Stopping lo)
-  batch_size: 32                      # Tăng cho T4 (16GB VRAM)
+  batch_size: 8                       # Giảm xuống 8 để tránh OOM trên T4 (16GB)
   eval_batch_size: 4                  # [FIX] Giảm cho Inference (LLaVA-Med ngốn VRAM)
   learning_rate: 3.0e-4
   phobert_lr: 1.0e-5
