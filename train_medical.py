@@ -143,6 +143,10 @@ def train(args):
 
     elif args.variant == 'DPO':
         from trl import DPOTrainer
+        try:
+            from trl import DPOConfig
+        except ImportError:
+            DPOConfig = None
         from transformers import TrainingArguments
         from datasets import Dataset as HFDataset
         import json
@@ -175,9 +179,7 @@ def train(args):
         prompts, chosens, rejecteds = [], [], []
         for item in pref_data:
             q = item.get("question", "")
-            # LLaVA cần prompt định dạng chứa <image>
             prompts.append(f"USER: <image>\n{q} ASSISTANT:")
-            # Kèm theo một khoảng trắng ở đầu (quy ước của TRL cho chosen/rejected)
             chosens.append(f" {item.get('chosen', '')}")
             rejecteds.append(f" {item.get('rejected', '')}")
             
@@ -187,14 +189,21 @@ def train(args):
             "rejected": rejecteds
         })
         
-        training_args = TrainingArguments(
-            output_dir="./checkpoints/DPO",
-            per_device_train_batch_size=config['train'].get('dpo_batch_size', 2),
-            num_train_epochs=config['train'].get('dpo_epochs', 3),
-            bf16=True, # LLaVA 4-bit dùng bfloat16
-            remove_unused_columns=False,
-            logging_steps=10
-        )
+        training_args_dict = {
+            "output_dir": "./checkpoints/DPO",
+            "per_device_train_batch_size": config['train'].get('dpo_batch_size', 2),
+            "num_train_epochs": config['train'].get('dpo_epochs', 3),
+            "bf16": True,
+            "remove_unused_columns": False,
+            "logging_steps": 10
+        }
+        
+        if DPOConfig is not None:
+            training_args_dict["beta"] = float(config.get('dpo', {}).get('beta', 0.1))
+            training_args = DPOConfig(**training_args_dict)
+        else:
+            training_args = TrainingArguments(**training_args_dict)
+            training_args.model_init_kwargs = None
         
         dpo_kwargs = {
             "model": model,
