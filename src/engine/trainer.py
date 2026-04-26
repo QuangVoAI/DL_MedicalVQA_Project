@@ -53,9 +53,19 @@ class MedicalVQATrainer:
                 if mask_closed.any():
                     loss += self.criterion_closed(logits_closed[mask_closed], label_closed[mask_closed])
                 
-                # Loss generator (Open-ended) - So khớp với decoder_target
+                # Phân tách Loss Generator để chống Mode Collapse (Lười biếng)
                 vocab_size = logits_open.size(-1)
-                loss += self.criterion_open(logits_open.reshape(-1, vocab_size), decoder_target.reshape(-1))
+                mask_open = (label_closed == -1)
+                
+                # 1. Câu hỏi Yes/No: Giảm trọng số xuống cực thấp (0.1) để model không bị thiên vị
+                if mask_closed.any():
+                    loss_gen_closed = self.criterion_open(logits_open[mask_closed].reshape(-1, vocab_size), decoder_target[mask_closed].reshape(-1))
+                    loss += loss_gen_closed * 0.1
+                    
+                # 2. Câu hỏi Mở: Tăng trọng số cực lớn (2.0) ép LSTM/Transformer phải học từ vựng
+                if mask_open.any():
+                    loss_gen_open = self.criterion_open(logits_open[mask_open].reshape(-1, vocab_size), decoder_target[mask_open].reshape(-1))
+                    loss += loss_gen_open * 2.0
             
             # Backward với GradScaler
             self.scaler.scale(loss).backward()
