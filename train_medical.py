@@ -145,17 +145,53 @@ def train(args):
         wrapper = MultimodalVQA(model_id=config['model_b']['model_name'])
         model, processor = wrapper.load_model()
         
-        # Load Reference Model cho DPO
+        # Load Reference Model cho DPO (bản sao đóng băng)
         ref_wrapper = MultimodalVQA(model_id=config['model_b']['model_name'])
         reference_model, _ = ref_wrapper.load_model()
         
         optimizer = optim.AdamW(model.parameters(), lr=float(config['train'].get('dpo_lr', 5e-7)))
         
+        # Tạo/Load Preference Data
+        pref_json = config.get('dpo', {}).get('preference_data', 'data/preference_data_slake.json')
+        if not os.path.exists(pref_json):
+            print(f"[INFO] Chưa có preference data. Đang tự động tạo từ training data...")
+            from src.engine.dpo_trainer import create_preference_data
+            # Tạo từ raw HF dataset hoặc local JSON
+            if hf_repo:
+                # Export HF dataset sang JSON tạm để tạo preference pairs
+                import json
+                raw_data = [{"question_vi": item["question_vi"], "answer_vi": item["answer_vi"], 
+                             "image_name": item.get("image_name", f"img_{i}.png")} 
+                            for i, item in enumerate(dataset_dict['train'])]
+                tmp_json = "data/tmp_train_for_dpo.json"
+                os.makedirs("data", exist_ok=True)
+                with open(tmp_json, 'w', encoding='utf-8') as f:
+                    json.dump(raw_data, f, ensure_ascii=False, indent=2)
+                create_preference_data(tmp_json, pref_json, num_pairs=200)
+            else:
+                create_preference_data(config['data']['vqa_json'], pref_json, num_pairs=200)
+        
+        # Tạo DPO Dataset (is_dpo=True → trả về chosen_ids/rejected_ids)
+        dpo_ds = MedicalVQADataset(
+            json_path=pref_json,
+            image_dir=config['data'].get('image_dir', 'data/images'),
+            tokenizer=tokenizer,
+            transform=transform,
+            is_dpo=True
+        )
+        
+        dpo_loader = DataLoader(
+            dpo_ds,
+            batch_size=config['train'].get('dpo_batch_size', 2),
+            shuffle=True,
+            collate_fn=vqa_collate_fn
+        )
+        
         from src.engine.dpo_trainer import MedicalDPOTrainer
         trainer = MedicalDPOTrainer(
             model=model,
             reference_model=reference_model,
-            train_loader=train_loader,
+            train_loader=dpo_loader,
             optimizer=optimizer,
             device=device,
             config=config
@@ -163,34 +199,38 @@ def train(args):
         trainer.train(epochs=config['train'].get('dpo_epochs', 3))
         os.makedirs("checkpoints", exist_ok=True)
         torch.save(model.state_dict(), f"checkpoints/medical_vqa_dpo.pth")
+        print("[SUCCESS] Đã lưu checkpoint DPO.")
         return
 
     elif args.variant == 'B2':
         # Fine-tuning LLaVA-Med (SFT)
         from trl import SFTTrainer
         from transformers import TrainingArguments
-        from torch.utils.data import Dataset as TorchDataset
+        from datasets import Dataset as HFDataset
         
         wrapper = MultimodalVQA(model_id=config['model_b']['model_name'])
         model, processor = wrapper.load_model()
         
-        # Wrapper dataset: SFTTrainer cần field 'text' + column_names
-        class SFTTextDataset(TorchDataset):
-            column_names = ["text"]
-            def __init__(self, hf_ds):
-                self.data = hf_ds
-            def __len__(self):
-                return len(self.data)
-            def __getitem__(self, idx):
-                item = self.data[idx]
-                q = item.get("question_vi", item.get("question", ""))
-                a = item.get("answer_vi", item.get("answer", ""))
-                text = f"USER: <image>\n{q} ASSISTANT: {a}"
-                return {"text": text}
+        # Chuyển đổi sang HF Dataset với field 'text' mà SFTTrainer yêu cầu
+        def make_sft_dataset(raw_ds):
+            texts = []
+            for i in range(len(raw_ds)):
+                item = raw_ds[i]
+                # HF dataset trả về dict, còn MedicalVQADataset trả về dict khác
+                if isinstance(item, dict):
+                    q = item.get("question_vi", item.get("question", item.get("raw_questions", "")))
+                    a = item.get("answer_vi", item.get("answer", item.get("raw_answer", "")))
+                else:
+                    q, a = "", ""
+                texts.append(f"USER: <image>\n{q} ASSISTANT: {a}")
+            return HFDataset.from_dict({"text": texts})
         
-        # Lấy raw HF dataset (chưa qua MedicalVQADataset)
-        sft_train = SFTTextDataset(dataset_dict['train'] if hf_repo else train_ds.dataset)
-        sft_val = SFTTextDataset(dataset_dict['validation'] if hf_repo else val_ds.dataset)
+        if hf_repo:
+            sft_train = make_sft_dataset(dataset_dict['train'])
+            sft_val = make_sft_dataset(dataset_dict['validation'])
+        else:
+            sft_train = make_sft_dataset(train_ds)
+            sft_val = make_sft_dataset(val_ds)
         
         training_args = TrainingArguments(
             output_dir="./checkpoints/B2",
