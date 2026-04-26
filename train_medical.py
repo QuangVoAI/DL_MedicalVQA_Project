@@ -174,8 +174,9 @@ def train(args):
         wrapper = MultimodalVQA(model_id=config['model_b']['model_name'])
         model, processor = wrapper.load_model()
         
-        # Wrapper dataset: SFTTrainer cần field 'text' dạng string
+        # Wrapper dataset: SFTTrainer cần field 'text' + column_names
         class SFTTextDataset(TorchDataset):
+            column_names = ["text"]
             def __init__(self, hf_ds):
                 self.data = hf_ds
             def __len__(self):
