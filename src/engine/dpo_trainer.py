@@ -93,6 +93,7 @@ class MedicalDPOTrainer:
 
         for epoch in range(epochs):
             self.model.train()
+            total_loss = 0.0  # Đã thêm dòng khởi tạo total_loss tại đây
             pbar = tqdm(self.train_loader, desc=f"DPO Epoch {epoch+1}")
             
             for batch in pbar:

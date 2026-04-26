@@ -9,7 +9,13 @@ class MedicalTranslator:
     """
     def __init__(self, device="cpu", dict_path="data/medical_dict.json"):
         self.device_type = device
-        self.device = torch.device("cuda" if device == "cuda" and torch.cuda.is_available() else "cpu")
+        # Tối ưu cho Dual GPU: Nếu có 2 GPU, đẩy Translator sang GPU thứ 2 (cuda:1)
+        if torch.cuda.device_count() > 1:
+            self.device = torch.device("cuda:1")
+            print(f"[INFO] Dual-GPU detected. Moving Translator to {self.device}")
+        else:
+            self.device = torch.device("cuda:0" if device == "cuda" and torch.cuda.is_available() else "cpu")
+        
         self.dict_path = dict_path
         
         self.tokenizer = None
@@ -40,16 +46,28 @@ class MedicalTranslator:
             
             medcrab_id = "pnnbao-ump/MedCrab-1.5B"
             self.tokenizer = AutoTokenizer.from_pretrained(medcrab_id)
+            
+            # Nếu dùng CUDA, ép model vào đúng GPU đã chọn (ví dụ cuda:1)
+            d_map = {"": self.device} if self.device.type == "cuda" else None
+            
             self.model = AutoModelForCausalLM.from_pretrained(
                 medcrab_id, 
                 quantization_config=bnb_config,
-                device_map="auto" if self.device_type == "cuda" else None,
+                device_map=d_map,
                 low_cpu_mem_usage=True
             )
             
             # 2. Helsinki-NLP (Ép chạy trên CPU để tiết kiệm VRAM cho LLaVA)
             from transformers import pipeline
-            self.vi2en = pipeline("translation_vi_to_en", model="Helsinki-NLP/opus-mt-vi-en", device=-1)
+            try:
+                # Thử các task name khác nhau tùy theo phiên bản transformers
+                self.vi2en = pipeline("translation_vi_to_en", model="Helsinki-NLP/opus-mt-vi-en", device=-1)
+            except:
+                try:
+                    self.vi2en = pipeline("translation", model="Helsinki-NLP/opus-mt-vi-en", device=-1)
+                except Exception as e_inner:
+                    print(f"[DEBUG] Cố gắng nạp pipeline tự động...")
+                    self.vi2en = pipeline(model="Helsinki-NLP/opus-mt-vi-en", device=-1)
             
             self.is_ready = True
             print("[INFO] Translation Layer đã sẵn sàng.")
