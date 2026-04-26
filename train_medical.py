@@ -267,7 +267,6 @@ def train(args):
             val_loader, 
             device, 
             processor_b, 
-            translator, 
             beam_width=beam_width
         )
         
