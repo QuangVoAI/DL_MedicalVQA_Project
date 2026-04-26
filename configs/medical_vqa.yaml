@@ -77,7 +77,8 @@ train:
 
 # ── Evaluation ──
 eval:
-  beam_width: 5                       # Tăng lên 5 để có kết quả chất lượng nhất (Nhưng sẽ chậm cho Hướng B)
+  beam_width_a: 5                     # Dành cho Hướng A (Nhanh & Chất lượng)
+  beam_width_b: 1                     # Dành cho Hướng B (Để tránh chạy 5 tiếng)
   metrics: ["vqa_accuracy", "bleu", "rouge_l", "meteor", "bertscore"]
   llm_judge: true
   llm_judge_model: "gemini-1.5-flash" # API model for LLM-as-a-judge

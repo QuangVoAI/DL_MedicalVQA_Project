@@ -1,50 +1,87 @@
 import torch
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+import json
+import os
+from transformers import AutoTokenizer, AutoModelForCausalLM
+from underthesea import word_tokenize
 
 class MedicalTranslator:
     """
-    Lớp dịch thuật hỗ trợ Hướng B (Zero-shot) chuyển đổi Vi <-> En.
-    Nạp mô hình trực tiếp từ Hugging Face Hub (Helsinki-NLP).
+    Lớp dịch thuật nâng cao sử dụng MedCrab-1.5B (SOTA English-Vietnamese Medical Translation).
+    Thay thế Helsinki-NLP để đạt độ chính xác y khoa cao nhất.
     """
-    def __init__(self, device="cpu"):
+    def __init__(self, device="cpu", dict_path="data/medical_dict.json"):
         self.device = torch.device("cuda" if device == "cuda" and torch.cuda.is_available() else "cpu")
-        print(f"[INFO] Khởi tạo Translation Layer trực tiếp từ HuggingFace Hub ({self.device})")
+        print(f"[INFO] Khởi tạo Translation Layer với MedCrab-1.5B ({self.device})")
         
+        # 1. Load MedDict (Dùng để kiểm tra/hậu xử lý nếu cần)
+        self.med_dict = {}
+        if os.path.exists(dict_path):
+            try:
+                with open(dict_path, 'r', encoding='utf-8') as f:
+                    self.med_dict = json.load(f)
+                self.inv_med_dict = {v.lower(): k.lower() for k, v in self.med_dict.items()}
+            except: pass
+        
+        # 2. Load MedCrab-1.5B
         try:
-            # Vi -> En (Tải trực tiếp từ HF)
-            self.vi2en_tokenizer = AutoTokenizer.from_pretrained("Helsinki-NLP/opus-mt-vi-en")
-            self.vi2en_model = AutoModelForSeq2SeqLM.from_pretrained("Helsinki-NLP/opus-mt-vi-en").to(self.device)
-            
-            # En -> Vi (Tải trực tiếp từ HF)
-            self.en2vi_tokenizer = AutoTokenizer.from_pretrained("Helsinki-NLP/opus-mt-en-vi")
-            self.en2vi_model = AutoModelForSeq2SeqLM.from_pretrained("Helsinki-NLP/opus-mt-en-vi").to(self.device)
-            
+            model_id = "pnnbao-ump/MedCrab-1.5B"
+            self.tokenizer = AutoTokenizer.from_pretrained(model_id)
+            # Nạp ở FP16 để tiết kiệm VRAM cho LLaVA-Med
+            self.model = AutoModelForCausalLM.from_pretrained(
+                model_id,
+                torch_dtype=torch.float16,
+                device_map="auto" if device == "cuda" else None
+            ).to(self.device)
             self.is_ready = True
         except Exception as e:
-            print(f"[WARNING] Không thể tải mô hình từ HuggingFace: {e}")
+            print(f"[WARNING] Không thể tải MedCrab-1.5B: {e}. Đang dùng fallback...")
             self.is_ready = False
 
-    def _translate(self, text, model, tokenizer):
-        if not self.is_ready or not text: return text
+    def _gen_medcrab(self, text, task="en2vi"):
+        if not self.is_ready: return text
         
-        is_single = isinstance(text, str)
-        if is_single: text = [text]
+        # Prompt chuẩn cho MedCrab (Dựa trên Qwen2.5)
+        if task == "en2vi":
+            prompt = f"English: {text}\nVietnamese:"
+        else:
+            prompt = f"Vietnamese: {text}\nEnglish:"
+            
+        inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
         
-        inputs = tokenizer(text, return_tensors="pt", padding=True, truncation=True).to(self.device)
         with torch.no_grad():
-            translated = model.generate(**inputs)
+            outputs = self.model.generate(
+                **inputs,
+                max_new_tokens=256,
+                temperature=0.1,
+                do_sample=False,
+                pad_token_id=self.tokenizer.eos_token_id
+            )
         
-        results = tokenizer.batch_decode(translated, skip_special_tokens=True)
-        return results[0] if is_single else results
+        full_text = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+        # Tách lấy phần trả lời sau "Vietnamese:" hoặc "English:"
+        if task == "en2vi":
+            translated = full_text.split("Vietnamese:")[-1].strip()
+        else:
+            translated = full_text.split("English:")[-1].strip()
+            
+        return translated
 
     def translate_vi2en(self, text):
-        return self._translate(text, self.vi2en_model, self.vi2en_tokenizer)
+        if not text: return text
+        if isinstance(text, list):
+            return [self._gen_medcrab(t, task="vi2en") for t in text]
+        return self._gen_medcrab(text, task="vi2en")
 
     def translate_en2vi(self, text):
-        # Tiền xử lý các câu trả lời ngắn
-        if isinstance(text, str):
-            text_lower = text.lower().strip()
-            if text_lower in ["yes", "it is yes", "correct"]: return "có"
-            if text_lower in ["no", "it is no", "incorrect"]: return "không"
+        if not text: return text
         
-        return self._translate(text, self.en2vi_model, self.en2vi_tokenizer)
+        # 1. Chuẩn hóa nhãn (Dành cho Accuracy)
+        if isinstance(text, str):
+            text_lower = text.lower().strip().replace(".", "").replace(",", "")
+            if any(word in text_lower for word in ["yes", "correct", "true", "normal"]): return "có"
+            if any(word in text_lower for word in ["no", "incorrect", "false", "abnormal"]): return "không"
+        
+        # 2. Dịch bằng MedCrab
+        if isinstance(text, list):
+            return [self._gen_medcrab(t, task="en2vi") for t in text]
+        return self._gen_medcrab(text, task="en2vi")

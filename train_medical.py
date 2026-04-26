@@ -215,20 +215,69 @@ def train(args):
         os.makedirs("checkpoints", exist_ok=True)
         torch.save(model.state_dict(), f"checkpoints/medical_vqa_dpo.pth")
         print(f"[SUCCESS] Đã lưu checkpoint DPO: checkpoints/medical_vqa_dpo.pth")
-        return # Thoát sau khi DPO xong
-    
-    # 4. Sử dụng Trainer tương ứng cho từng Variant
-    if args.variant == 'B1':
-        # B1: Zero-shot Inference (Không huấn luyện)
-        print("[INFO] Đang chạy Zero-shot Inference cho B1 (LLaVA-Med)...")
+
+    # 3. Chạy Zero-shot / Eval cho Hướng B (LLaVA-Med)
+    if args.variant in ['B1', 'B2'] and not args.dpo:
         from src.engine.medical_eval import evaluate_multimodal_vqa
-        beam_width = config['eval'].get('beam_width', 1)
-        metrics = evaluate_multimodal_vqa(model, val_loader, device, processor, beam_width=beam_width)
-        print(f"[METRICS] Kết quả Zero-shot (B1): {metrics}")
+        from src.models.multimodal_vqa import MedicalMultimodalVQA
+        from src.utils.translator import MedicalTranslator
+        
+        print(f"[INFO] Bắt đầu đánh giá biến thể {args.variant} (LLaVA-Med)...")
+        # Load Translator (MedCrab-1.5B)
+        translator = MedicalTranslator(device=device)
+        
+        # Load Model & Processor
+        model_wrapper = MedicalMultimodalVQA(model_id=config['model_b']['model_id'], device=device)
+        beam_width = config['eval'].get('beam_width_b', 1)
+        
+        print(f"[INFO] Sử dụng Beam Width = {beam_width} cho Hướng B")
+        metrics = evaluate_multimodal_vqa(
+            model_wrapper.model, 
+            val_loader, 
+            device, 
+            model_wrapper.processor, 
+            translator, 
+            beam_width=beam_width
+        )
+        
+        print(f"\n[RESULT {args.variant}]")
+        print(f"Accuracy: {metrics.get('vqa_accuracy', 0):.4f}")
+        print(f"F1: {metrics.get('f1', 0):.4f}")
+        print(f"BLEU-4: {metrics.get('bleu', 0):.4f}")
+        return
+
+    # --- Hướng A: Huấn luyện Modular Models (A1, A2) ---
+    beam_width = config['eval'].get('beam_width_a', 5)
+    print(f"[INFO] Sử dụng Beam Width = {beam_width} cho Hướng A")
+    
+    if args.variant in ['A1', 'A2']:
+        from src.engine.trainer import MedicalVQATrainer
+        
+        # Optimizer riêng biệt cho từng thành phần
+        optimizer = optim.AdamW([
+            {'params': model.image_encoder.parameters(), 'lr': float(config['train']['vision_lr'])},
+            {'params': model.text_encoder.parameters(), 'lr': float(config['train']['phobert_lr'])},
+            {'params': model.fusion.parameters(), 'lr': float(config['train']['learning_rate'])},
+            {'params': model.decoder.parameters(), 'lr': float(config['train']['learning_rate'])}
+        ])
+        
+        trainer = MedicalVQATrainer(
+            model=model,
+            train_loader=train_loader,
+            val_loader=val_loader,
+            optimizer=optimizer,
+            device=device,
+            config=config,
+            beam_width=beam_width
+        )
+        
+        print(f"[INFO] Bắt đầu huấn luyện cấu hình {args.variant}...")
+        trainer.train()
         return
 
     elif args.variant == 'B2':
         # B2: Fine-tune sử dụng SFTTrainer (trl)
+        # ... logic SFTTrainer hiện tại ...
         print("[INFO] Đang khởi tạo SFTTrainer cho B2 (Fine-tuning LLaVA-Med)...")
         from trl import SFTTrainer
         from transformers import TrainingArguments
