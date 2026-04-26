@@ -1,4 +1,4 @@
-# 📝 Tài liệu Kỹ thuật: Mô hình Baseline (Cấu hình A1)
+# Tài liệu Kỹ thuật: Mô hình Baseline (Cấu hình A1)
 
 Tài liệu này mô tả chi tiết thiết lập mô hình mốc (Baseline) cho dự án Medical VQA Tiếng Việt. Baseline được sử dụng để thiết lập một mức hiệu năng cơ bản, từ đó đánh giá sự cải tiến của các kiến trúc phức tạp hơn (Transformer, Multimodal).
 
