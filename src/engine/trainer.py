@@ -4,7 +4,7 @@ import torch.nn as nn
 from tqdm import tqdm
 
 class MedicalVQATrainer:
-    def __init__(self, model, train_loader, val_loader, optimizer, device, config, scheduler=None, pad_token_id=0):
+    def __init__(self, model, train_loader, val_loader, optimizer, device, config, scheduler=None, pad_token_id=0, beam_width=1):
         self.model = model
         self.train_loader = train_loader
         self.val_loader = val_loader
@@ -12,6 +12,7 @@ class MedicalVQATrainer:
         self.scheduler = scheduler
         self.device = device
         self.config = config
+        self.beam_width = beam_width
         
         self.criterion_closed = nn.CrossEntropyLoss()
         self.criterion_open = nn.CrossEntropyLoss(
@@ -83,8 +84,7 @@ class MedicalVQATrainer:
         """
         from src.engine.medical_eval import evaluate_vqa
         print(f"\n🔍 Đang chạy Validation cho Epoch {epoch}...")
-        beam_width = self.config['train'].get('beam_width', 1)
-        metrics = evaluate_vqa(self.model, self.val_loader, self.device, tokenizer, beam_width=beam_width)
+        metrics = evaluate_vqa(self.model, self.val_loader, self.device, tokenizer, beam_width=self.beam_width)
         
         # In các metrics quan trọng
         print(f"[METRICS] Accuracy: {metrics['accuracy']:.4f} | F1: {metrics['f1']:.4f} | BLEU-4: {metrics['bleu4']:.4f}")

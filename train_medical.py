@@ -217,7 +217,7 @@ def train(args):
         print(f"[SUCCESS] Đã lưu checkpoint DPO: checkpoints/medical_vqa_dpo.pth")
 
     # 3. Chạy Zero-shot / Eval cho Hướng B (LLaVA-Med)
-    if args.variant in ['B1', 'B2'] and not args.dpo:
+    if args.variant in ['B1', 'B2']:
         from src.engine.medical_eval import evaluate_multimodal_vqa
         from src.models.multimodal_vqa import MedicalMultimodalVQA
         from src.utils.translator import MedicalTranslator
@@ -272,7 +272,7 @@ def train(args):
         )
         
         print(f"[INFO] Bắt đầu huấn luyện cấu hình {args.variant}...")
-        trainer.train()
+        trainer.train(epochs=config['train']['epochs'], tokenizer=tokenizer)
         return
 
     elif args.variant == 'B2':
