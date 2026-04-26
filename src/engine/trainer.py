@@ -70,12 +70,12 @@ class MedicalVQATrainer:
         return total_loss / len(self.train_loader)
 
 
-    def val_epoch(self, tokenizer):
+    def val_epoch(self, tokenizer, epoch=0):
         """
         Thực hiện đánh giá trên tập Validation sau mỗi Epoch.
         """
         from src.engine.medical_eval import evaluate_vqa
-        print("\n🔍 Đang chạy Validation...")
+        print(f"\n🔍 Đang chạy Validation cho Epoch {epoch}...")
         beam_width = self.config['train'].get('beam_width', 1)
         metrics = evaluate_vqa(self.model, self.val_loader, self.device, tokenizer, beam_width=beam_width)
         
@@ -84,7 +84,7 @@ class MedicalVQATrainer:
         
         if wandb.run:
             wandb.log({
-                "epoch": epoch if "epoch" in locals() else 0,
+                "epoch": epoch,
                 "val_accuracy": metrics["accuracy"],
                 "val_f1": metrics["f1"],
                 "val_bleu4": metrics["bleu4"],
@@ -94,10 +94,9 @@ class MedicalVQATrainer:
         return metrics
 
     def train(self, epochs, tokenizer=None):
-        print(f"[INFO] Starting training for {epochs} epochs...")
+        print(f"[INFO] Bắt đầu huấn luyện trong {epochs} epochs...")
         for epoch in range(1, epochs + 1):
-            loss = self.train_epoch(epoch)
-            metrics = self.val_epoch(tokenizer)
-            if self.scheduler:
-                self.scheduler.step()
-        print("[INFO] Training completed.")
+            train_loss = self.train_epoch(epoch)
+            metrics = self.val_epoch(tokenizer, epoch=epoch)
+            # Scheduler đã được step trong train_epoch, không cần step ở đây nữa.
+        print("[INFO] Huấn luyện hoàn tất.")

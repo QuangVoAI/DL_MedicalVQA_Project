@@ -63,7 +63,7 @@ class MedicalVQAModelA(nn.Module):
         t_feats = self.text_encoder(input_ids, attention_mask)
         fused = self.fusion(v_feats, t_feats)
         
-        logits_open, logits_closed = self.decoder(fused, labels_open, labels_closed)
+        logits_closed, logits_open = self.decoder(fused, labels_open)
 
         return logits_closed, logits_open
 

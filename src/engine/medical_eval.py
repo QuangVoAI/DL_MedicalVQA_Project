@@ -72,15 +72,26 @@ def evaluate_multimodal_vqa(model, dataloader, device, processor, beam_width=1):
     
     with torch.no_grad():
         for batch in tqdm(dataloader, desc="Evaluating Multimodal"):
-            raw_images = batch.get('raw_images')
+            raw_images = batch.get('raw_image')
             questions = batch.get('raw_questions')
             
-            if raw_images is None:
-                inputs = {"pixel_values": batch['image'].to(device), "input_ids": batch['input_ids'].to(device)}
-            else:
+            if raw_images is not None:
                 inputs = processor(text=questions, images=raw_images, return_tensors="pt", padding=True).to(device)
+                if "pixel_values" in inputs:
+                    inputs["pixel_values"] = inputs["pixel_values"].to(torch.bfloat16)
+            else:
+                inputs = {
+                    "pixel_values": batch['image'].to(device).to(torch.bfloat16), 
+                    "input_ids": batch['input_ids'].to(device)
+                }
 
-            output_ids = model.generate(**inputs, max_new_tokens=64, do_sample=False, num_beams=beam_width, early_stopping=True if beam_width > 1 else False)
+            output_ids = model.generate(
+                **inputs, 
+                max_new_tokens=64, 
+                do_sample=False, 
+                num_beams=beam_width, 
+                early_stopping=True if beam_width > 1 else False
+            )
             input_token_len = inputs.input_ids.shape[1]
             new_tokens = output_ids[:, input_token_len:]
             preds_text = processor.batch_decode(new_tokens, skip_special_tokens=True)

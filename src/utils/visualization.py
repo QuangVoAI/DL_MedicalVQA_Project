@@ -47,7 +47,7 @@ class MedicalImageTransform:
         # img_clahe shape: [224, 224]
         img_tensor = torch.from_numpy(img_clahe).unsqueeze(0) # [1, 224, 224]
             
-        # 4. Chuẩn hóa về dải [-1, 1]. 
-        # Ghi chú: XRV thường cảnh báo dải [-1024, 1024] nhưng với ảnh 8-bit, 
-        # dải [-1, 1] là đủ để mô hình hoạt động ổn định.
-        return self.normalize(img_tensor)
+        # 4. Chuẩn hóa về dải [-1024, 1024] cho DenseNet XRV.
+        # XRV được train trên dải cường độ cao này để bảo tồn chi tiết y tế.
+        img_tensor = img_tensor * 2048.0 - 1024.0
+        return img_tensor

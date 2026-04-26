@@ -9,7 +9,7 @@ class MedicalVQADataset(Dataset):
     """
     Dataset class chung cho Medical VQA (SLAKE + VQA-RAD).
     """
-    def __init__(self, hf_dataset=None, json_path=None, image_dir=None, tokenizer=None, transform=None, max_seq_len=64, is_dpo=False, in_channels=1):
+    def __init__(self, hf_dataset=None, json_path=None, image_dir=None, tokenizer=None, transform=None, max_seq_len=64, max_ans_len=10, is_dpo=False, in_channels=1):
         if hf_dataset is not None:
             self.data = hf_dataset
             self.use_hf = True
@@ -24,6 +24,7 @@ class MedicalVQADataset(Dataset):
         self.tokenizer = tokenizer
         self.transform = transform
         self.max_seq_len = max_seq_len
+        self.max_ans_len = max_ans_len
         self.is_dpo = is_dpo
         self.in_channels = in_channels
         
@@ -88,6 +89,7 @@ class MedicalVQADataset(Dataset):
             
             return {
                 "image": image,
+                "raw_image": raw_image,
                 "raw_questions": raw_question,
                 "input_ids": encoding["input_ids"].flatten(),
                 "chosen_ids": chosen_encoding["input_ids"].flatten(),
@@ -102,12 +104,13 @@ class MedicalVQADataset(Dataset):
             answer,
             padding="max_length",
             truncation=True,
-            max_length=10,
+            max_length=self.max_ans_len,
             return_tensors="pt"
         )
         
         return {
             "image": image,
+            "raw_image": raw_image,
             "raw_questions": raw_question,
             "input_ids": encoding["input_ids"].flatten(),
             "attention_mask": encoding["attention_mask"].flatten(),

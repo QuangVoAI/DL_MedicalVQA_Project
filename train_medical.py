@@ -16,6 +16,18 @@ from src.utils.visualization import MedicalImageTransform as MedicalTransform
 from src.data.medical_dataset import MedicalVQADataset
 from src.utils.metrics import batch_metrics
 
+def vqa_collate_fn(batch):
+    """Hàm gom batch tùy chỉnh để xử lý ảnh PIL và raw text."""
+    elem = batch[0]
+    collated = {}
+    for key in elem.keys():
+        if key in ['image', 'input_ids', 'attention_mask', 'label_closed', 'target_ids', 'chosen_ids', 'rejected_ids']:
+            collated[key] = torch.stack([item[key] for item in batch])
+        else:
+            # Giữ nguyên list cho PIL images và raw text
+            collated[key] = [item[key] for item in batch]
+    return collated
+
 def train(args):
     # 1. Load Cấu hình
     with open(args.config, 'r', encoding='utf-8') as f:
@@ -51,9 +63,27 @@ def train(args):
             config['train']['epochs'] = 2
             config['train']['batch_size'] = 2
             
-        train_ds = MedicalVQADataset(hf_dataset=dataset_dict['train'], tokenizer=tokenizer, transform=transform)
-        val_ds = MedicalVQADataset(hf_dataset=dataset_dict['validation'], tokenizer=tokenizer, transform=transform)
-        test_ds = MedicalVQADataset(hf_dataset=dataset_dict['test'], tokenizer=tokenizer, transform=transform)
+        train_ds = MedicalVQADataset(
+            hf_dataset=dataset_dict['train'], 
+            tokenizer=tokenizer, 
+            transform=transform, 
+            max_seq_len=config['data']['max_question_len'],
+            max_ans_len=config['data']['max_answer_len']
+        )
+        val_ds = MedicalVQADataset(
+            hf_dataset=dataset_dict['validation'], 
+            tokenizer=tokenizer, 
+            transform=transform, 
+            max_seq_len=config['data']['max_question_len'],
+            max_ans_len=config['data']['max_answer_len']
+        )
+        test_ds = MedicalVQADataset(
+            hf_dataset=dataset_dict['test'], 
+            tokenizer=tokenizer, 
+            transform=transform, 
+            max_seq_len=config['data']['max_question_len'],
+            max_ans_len=config['data']['max_answer_len']
+        )
     else:
         vqa_path = config['data']['vqa_json']
         if not os.path.exists(vqa_path):
@@ -65,7 +95,9 @@ def train(args):
             json_path=vqa_path,
             image_dir=config['data']['image_dir'],
             tokenizer=tokenizer,
-            transform=transform
+            transform=transform,
+            max_seq_len=config['data']['max_question_len'],
+            max_ans_len=config['data']['max_answer_len']
         )
         if args.debug:
             print("[WARNING] DEBUG MODE: Chỉ lấy 20 mẫu từ dữ liệu cục bộ để test.")
@@ -79,8 +111,22 @@ def train(args):
         test_size = len(full_dataset) - train_size - val_size
         train_ds, val_ds, test_ds = random_split(full_dataset, [train_size, val_size, test_size])
     
-    train_loader = DataLoader(train_ds, batch_size=config['train']['batch_size'], shuffle=True)
-    val_loader = DataLoader(val_ds, batch_size=config['train']['batch_size'])
+    # [FIX] Cập nhật DataLoader với collate_fn
+    train_loader = DataLoader(
+        train_ds, 
+        batch_size=config['train']['batch_size'], 
+        shuffle=True, 
+        collate_fn=vqa_collate_fn,
+        num_workers=config['train'].get('num_workers', 0),
+        pin_memory=config['train'].get('pin_memory', False)
+    )
+    val_loader = DataLoader(
+        val_ds, 
+        batch_size=config['train']['batch_size'], 
+        collate_fn=vqa_collate_fn,
+        num_workers=config['train'].get('num_workers', 0),
+        pin_memory=config['train'].get('pin_memory', False)
+    )
 
     # 3. Khởi tạo Mô hình dựa trên Variant
     vocab_size = len(tokenizer)
@@ -238,11 +284,11 @@ def train(args):
     patience = config['train'].get('patience', 3)
     counter = 0
     
-    for epoch in range(config.get('epochs', 10)):
+    for epoch in range(config['train'].get('epochs', 10)):
         train_loss = trainer.train_epoch(epoch + 1)
         
         # Bước Validation
-        val_metrics = trainer.val_epoch(tokenizer)
+        val_metrics = trainer.val_epoch(tokenizer, epoch=epoch + 1)
         val_acc = val_metrics['accuracy']
         
         # Early Stopping & Lưu Model tốt nhất
