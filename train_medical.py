@@ -42,6 +42,15 @@ def train(args):
     if hf_repo:
         print(f"[INFO] Đang tải dữ liệu từ Hub: {hf_repo}")
         dataset_dict = load_dataset(hf_repo)
+        
+        if args.debug:
+            print("[WARNING] DEBUG MODE: Chỉ lấy 20 mẫu từ Hub để test.")
+            # Cắt giảm tập train cho nhanh
+            train_idx = min(20, len(dataset_dict['train']))
+            dataset_dict['train'] = dataset_dict['train'].select(range(train_idx))
+            config['train']['epochs'] = 2
+            config['train']['batch_size'] = 2
+            
         train_ds = MedicalVQADataset(hf_dataset=dataset_dict['train'], tokenizer=tokenizer, transform=transform)
         val_ds = MedicalVQADataset(hf_dataset=dataset_dict['validation'], tokenizer=tokenizer, transform=transform)
         test_ds = MedicalVQADataset(hf_dataset=dataset_dict['test'], tokenizer=tokenizer, transform=transform)
@@ -61,7 +70,7 @@ def train(args):
         if args.debug:
             print("[WARNING] DEBUG MODE: Chỉ lấy 20 mẫu từ dữ liệu cục bộ để test.")
             full_dataset.data = full_dataset.data[:20]
-            config['epochs'] = 2
+            config['train']['epochs'] = 2
             config['train']['batch_size'] = 2
 
         # Chia train/val/test 80/10/10

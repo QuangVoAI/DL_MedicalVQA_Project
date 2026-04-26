@@ -18,7 +18,12 @@ except Exception as e:
 # 2. BERTScore
 try:
     from bert_score import BERTScorer
-    bert_scorer = BERTScorer(lang="vi", rescale_with_baseline=True)
+    # Ép sử dụng model multilingual để tránh lỗi attribute của Tokenizer trên Python 3.12
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    bert_scorer = BERTScorer(model_type="bert-base-multilingual-cased", device=device)
+except ImportError:
+    print("[WARNING] Thư viện bert_score chưa được cài đặt.")
+    bert_scorer = None
 except Exception as e:
     bert_scorer = None
     print(f"Warning: Could not load BERTScorer: {e}")

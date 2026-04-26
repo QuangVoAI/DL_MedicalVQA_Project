@@ -58,17 +58,22 @@ class MedicalVQAModelA(nn.Module):
             hidden_size=hidden_size
         )
 
-    def forward(self, images, input_ids, attention_mask, target_ids=None, beam_width=1):
-        # Visual features: [B, 768]
+    def forward(self, images, input_ids, attention_mask, labels_open=None, labels_closed=None):
         v_feats = self.image_encoder(images)
-        
-        # Text features: [B, 768]
         t_feats = self.text_encoder(input_ids, attention_mask)
+        fused = self.fusion(v_feats, t_feats)
         
-        # Fusion sử dụng Co-Attention
-        fused = self.fusion(v_feats, t_feats) # [B, 1, 768]
-        
-        # Decoding với hỗ trợ Beam Search
-        logits_closed, logits_open = self.decoder(fused, target_ids, beam_width=beam_width)
-        
+        logits_open, logits_closed = self.decoder(fused, labels_open, labels_closed)
+
         return logits_closed, logits_open
+
+    def generate(self, images, input_ids, attention_mask, beam_width=1, max_len=10):
+        """
+        Giao diện chuyên biệt cho quá trình Inference.
+        """
+        v_feats = self.image_encoder(images)
+        t_feats = self.text_encoder(input_ids, attention_mask)
+        fused = self.fusion(v_feats, t_feats)
+        
+        # Gọi trực tiếp hàm generate của decoder
+        return self.decoder.generate(fused, beam_width=beam_width, max_len=max_len)

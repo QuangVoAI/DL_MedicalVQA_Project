@@ -7,7 +7,7 @@ class MultimodalVQA:
     Wrapper cho LLaVA-Med-7B tích hợp QLoRA 4-bit để huấn luyện trên Kaggle.
     Sử dụng kiến trúc LLaVA-1.5 (microsoft/llava-med-v1.5-7b).
     """
-    def __init__(self, model_id="microsoft/llava-med-v1.5-7b"):
+    def __init__(self, model_id="chaoyinshe/llava-med-v1.5-mistral-7b-hf"):
         self.model_id = model_id
         
         # 1. Cấu hình Quantization 4-bit (Tiết kiệm VRAM)

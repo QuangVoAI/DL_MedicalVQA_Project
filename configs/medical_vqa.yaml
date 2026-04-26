@@ -42,7 +42,7 @@ model_a:
 
 # ── Hướng B: Multimodal Pretrained ──
 model_b:
-  model_name: "microsoft/llava-med-v1.5-7b"  # Sửa từ PaliGemma sang LLaVA-Med để khớp với code
+  model_name: "chaoyinshe/llava-med-v1.5-mistral-7b-hf"  # Bản HF compatible cho transformers
   use_lora: true
   lora_r: 16
   lora_alpha: 32
@@ -59,19 +59,19 @@ dpo:
 # ── Training ──
 train:
   epochs: 30
-  batch_size: 16
+  batch_size: 32                      # Tăng cho T4 (16GB VRAM)
   learning_rate: 3.0e-4
-  phobert_lr: 1.0e-5                  # LR riêng cho PhoBERT (nhỏ hơn 30x)
+  phobert_lr: 1.0e-5
   label_smoothing: 0.1
   grad_clip: 5.0
   patience: 10
-  warmup_epochs: 3
+  warmup_epochs: 5                    # Tăng nhẹ để ổn định
   scheduler: "cosine"
   eta_min: 1.0e-6
   eval_every: 2
-  use_amp: true
-  num_workers: 0                      # macOS safe
-  pin_memory: false
+  use_amp: true                       # Luôn bật Mixed Precision cho T4
+  num_workers: 2                      # Tăng tốc nạp dữ liệu trên Kaggle
+  pin_memory: true                    # Tăng tốc truyền dữ liệu lên GPU
 
 # ── Evaluation ──
 eval:

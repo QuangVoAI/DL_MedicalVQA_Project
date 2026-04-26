@@ -32,9 +32,19 @@ def evaluate_vqa(model, dataloader, device, tokenizer, beam_width=1):
             input_ids = batch['input_ids'].to(device)
             attention_mask = batch['attention_mask'].to(device)
             
-            _, logits_open = model(images, input_ids, attention_mask, beam_width=beam_width)
+            # Sử dụng hàm generate chính thức
+            logits_open = model.generate(images, input_ids, attention_mask, beam_width=beam_width)
             pred_ids = torch.argmax(logits_open, dim=-1)
             preds_text = tokenizer.batch_decode(pred_ids, skip_special_tokens=True)
+            
+            # Debug: In ra mẫu đầu tiên để kiểm tra
+            if len(all_preds) == 0:
+                print("\n--- DEBUG PREDICTIONS ---")
+                for i in range(min(3, len(preds_text))):
+                    print(f"Q: {batch['raw_questions'][i]}")
+                    print(f"Pred: '{preds_text[i]}'")
+                    print(f"GT  : '{batch['raw_answer'][i]}'")
+                print("--------------------------\n")
             
             all_preds.extend(preds_text)
             all_refs.extend(batch['raw_answer'])
