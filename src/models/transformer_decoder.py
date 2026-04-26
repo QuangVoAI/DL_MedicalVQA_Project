@@ -34,6 +34,11 @@ class MedicalVQADecoder(nn.Module):
         else:
             return self._beam_search(fused_features, beam_width, max_len)
 
+    def _generate_square_subsequent_mask(self, sz):
+        mask = (torch.triu(torch.ones(sz, sz)) == 1).transpose(0, 1)
+        mask = mask.float().masked_fill(mask == 0, float('-inf')).masked_fill(mask == 1, float(0.0))
+        return mask
+
     def _greedy_search(self, fused_features, max_len):
         batch_size = fused_features.size(0)
         device = fused_features.device
@@ -49,7 +54,8 @@ class MedicalVQADecoder(nn.Module):
                     h_state = (h0, torch.zeros_like(h0))
                 outputs, h_state = self.generator(curr_emb, h_state)
             else:
-                outputs = self.generator(curr_emb, fused_features)
+                tgt_mask = self._generate_square_subsequent_mask(generated.size(1)).to(device)
+                outputs = self.generator(curr_emb, fused_features, tgt_mask=tgt_mask)
             
             next_logits = self.output_layer(outputs[:, -1:, :])
             all_logits.append(next_logits)

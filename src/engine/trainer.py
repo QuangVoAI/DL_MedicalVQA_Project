@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from tqdm import tqdm
 
-class MedicalVQATrainer:
+class Trainer:
     def __init__(self, model, train_loader, val_loader, optimizer, device, config, scheduler=None, pad_token_id=0):
         self.model = model
         self.train_loader = train_loader
@@ -80,3 +80,12 @@ class MedicalVQATrainer:
         # In các metrics quan trọng
         print(f"📊 Accuracy: {metrics['accuracy']:.4f} | F1: {metrics['f1']:.4f} | BLEU-4: {metrics['bleu4']:.4f}")
         return metrics
+
+    def train(self, epochs, tokenizer=None):
+        print(f"[INFO] Starting training for {epochs} epochs...")
+        for epoch in range(1, epochs + 1):
+            loss = self.train_epoch(epoch)
+            metrics = self.val_epoch(tokenizer)
+            if self.scheduler:
+                self.scheduler.step()
+        print("[INFO] Training completed.")

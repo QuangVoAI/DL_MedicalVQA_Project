@@ -91,23 +91,28 @@ class MedicalDPOTrainer:
             pbar = tqdm(self.train_loader, desc=f"DPO Epoch {epoch+1}")
             
             for batch in pbar:
-                # Chuyển dữ liệu lên device
                 images = batch['image'].to(self.device)
-                
-                # Trong thực tế, DPO batch sẽ chứa cả input_ids_chosen và input_ids_rejected
-                # Giả định format từ DataLoader
                 chosen_ids = batch['chosen_ids'].to(self.device)
                 rejected_ids = batch['rejected_ids'].to(self.device)
                 
                 # 1. Forward Policy Model
-                # Giả định forward nhận images + input_ids
-                logits_w = self.model(images, chosen_ids)[1] # Lấy logits từ head generator
-                logits_l = self.model(images, rejected_ids)[1]
+                if hasattr(self.model, 'forward_multimodal'): # Giả sử cách gọi cho Multimodal
+                    # LLaVA case
+                    logits_w = self.model(pixel_values=images, input_ids=chosen_ids).logits
+                    logits_l = self.model(pixel_values=images, input_ids=rejected_ids).logits
+                else:
+                    # Modular case
+                    _, logits_w = self.model(images, chosen_ids)
+                    _, logits_l = self.model(images, rejected_ids)
                 
                 # 2. Forward Reference Model (no_grad)
                 with torch.no_grad():
-                    ref_logits_w = self.reference_model(images, chosen_ids)[1]
-                    ref_logits_l = self.reference_model(images, rejected_ids)[1]
+                    if hasattr(self.reference_model, 'forward_multimodal'):
+                        ref_logits_w = self.reference_model(pixel_values=images, input_ids=chosen_ids).logits
+                        ref_logits_l = self.reference_model(pixel_values=images, input_ids=rejected_ids).logits
+                    else:
+                        _, ref_logits_w = self.reference_model(images, chosen_ids)
+                        _, ref_logits_l = self.reference_model(images, rejected_ids)
                 
                 # 3. Tính log probs
                 logps_w = self.get_log_probs(logits_w, chosen_ids)
