@@ -250,22 +250,24 @@ def train(args):
     # 4. Chạy Zero-shot / Eval cho Hướng B (B1 và B2 sau khi đã fine-tune)
     if args.variant in ['B1', 'B2']:
         from src.engine.medical_eval import evaluate_multimodal_vqa
-        from src.models.multimodal_vqa import MedicalMultimodalVQA
+        from src.models.multimodal_vqa import MultimodalVQA
         from src.utils.translator import MedicalTranslator
         
         print(f"[INFO] Bắt đầu đánh giá biến thể {args.variant} (LLaVA-Med)...")
         translator = MedicalTranslator(device=device)
         
-        # [FIX 2] Sửa 'model_id' thành 'model_name' để khớp với biến trong file YAML
-        model_wrapper = MedicalMultimodalVQA(model_id=config['model_b']['model_name'], device=device)
-        beam_width = config['eval'].get('beam_width_b', 1)
+        # [FIX] Sử dụng tên lớp chính xác: MultimodalVQA
+        model_wrapper = MultimodalVQA(model_id=config['model_b']['model_name'])
+        model_b, processor_b = model_wrapper.load_model()
         
+        beam_width = config['eval'].get('beam_width_b', 1)
         print(f"[INFO] Sử dụng Beam Width = {beam_width} cho Hướng B")
+        
         metrics = evaluate_multimodal_vqa(
-            model_wrapper.model, 
+            model_b, 
             val_loader, 
             device, 
-            model_wrapper.processor, 
+            processor_b, 
             translator, 
             beam_width=beam_width
         )
