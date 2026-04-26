@@ -29,15 +29,11 @@ def apply_clahe(img_array):
 
 class MedicalImageTransform:
     """
-    Custom transform tích hợp CLAHE và chuẩn hóa cho Medical VQA.
+    Custom transform tích hợp CLAHE và chuẩn hóa cho Medical VQA (Hướng A - XRV).
     """
     def __init__(self, size=224):
         self.resize = transforms.Resize((size, size))
-        self.to_tensor = transforms.ToTensor()
-        self.normalize = transforms.Normalize(
-            mean=[0.5, 0.5, 0.5], 
-            std=[0.5, 0.5, 0.5]
-        )
+        self.normalize = transforms.Normalize(mean=[0.5], std=[0.5])
 
     def __call__(self, img):
         # 1. Resize
@@ -47,12 +43,11 @@ class MedicalImageTransform:
         img_np = np.array(img)
         img_clahe = apply_clahe(img_np) # Trả về ảnh [0, 1]
         
-        # 3. Chuyển sang Tensor và chuẩn hóa về 3 kênh (RGB) cho Encoder
-        if len(img_clahe.shape) == 2:
-            # Grayscale -> 3 channels
-            img_tensor = torch.from_numpy(img_clahe).unsqueeze(0).repeat(3, 1, 1)
-        else:
-            # RGB [H, W, C] -> [C, H, W]
-            img_tensor = torch.from_numpy(img_clahe).permute(2, 0, 1)
+        # 3. Chuyển sang Tensor 1 kênh cho DenseNet XRV
+        # img_clahe shape: [224, 224]
+        img_tensor = torch.from_numpy(img_clahe).unsqueeze(0) # [1, 224, 224]
             
+        # 4. Chuẩn hóa về dải [-1, 1]. 
+        # Ghi chú: XRV thường cảnh báo dải [-1024, 1024] nhưng với ảnh 8-bit, 
+        # dải [-1, 1] là đủ để mô hình hoạt động ổn định.
         return self.normalize(img_tensor)

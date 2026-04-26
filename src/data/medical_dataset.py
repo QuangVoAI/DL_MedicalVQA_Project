@@ -9,7 +9,7 @@ class MedicalVQADataset(Dataset):
     """
     Dataset class chung cho Medical VQA (SLAKE + VQA-RAD).
     """
-    def __init__(self, hf_dataset=None, json_path=None, image_dir=None, tokenizer=None, transform=None, max_seq_len=64, is_dpo=False):
+    def __init__(self, hf_dataset=None, json_path=None, image_dir=None, tokenizer=None, transform=None, max_seq_len=64, is_dpo=False, in_channels=1):
         if hf_dataset is not None:
             self.data = hf_dataset
             self.use_hf = True
@@ -25,6 +25,7 @@ class MedicalVQADataset(Dataset):
         self.transform = transform
         self.max_seq_len = max_seq_len
         self.is_dpo = is_dpo
+        self.in_channels = in_channels
         
         # Mapping for closed questions (Yes/No)
         self.label_map = {"no": 0, "yes": 1, "không": 0, "có": 1}
@@ -38,13 +39,16 @@ class MedicalVQADataset(Dataset):
         # 1. Xử lý ảnh
         if self.use_hf:
             image = item["image"]
-            if not isinstance(image, Image.Image):
-                image = image.convert("RGB")
+            if self.in_channels == 1:
+                if image.mode != "L": image = image.convert("L")
+            else:
+                if image.mode != "RGB": image = image.convert("RGB")
         else:
             # DPO preference data might use 'image' or 'image_name'
             img_name = item.get("image_name") or item.get("image")
             img_path = os.path.join(self.image_dir, img_name)
-            image = Image.open(img_path).convert("RGB")
+            mode = "L" if self.in_channels == 1 else "RGB"
+            image = Image.open(img_path).convert(mode)
             
         # [UPGRADE] Tích hợp CLAHE ngay trong Dataset để đảm bảo cả Hướng A và B đều được hưởng lợi
         from src.utils.visualization import apply_clahe
