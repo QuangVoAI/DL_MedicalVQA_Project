@@ -51,11 +51,16 @@ class MedicalVQAModelA(nn.Module):
         # 3. Fusion Layer (Co-Attention Fusion)
         self.fusion = CoAttentionFusion(hidden_size=hidden_size, nhead=8)
         
-        # 4. Decoder (LSTM / Transformer)
+        # 4. Trích xuất pretrained embeddings từ PhoBERT cho Decoder
+        phobert_embeddings = self.text_encoder.bert.embeddings.word_embeddings.weight
+        actual_vocab_size = phobert_embeddings.size(0)
+        
+        # 5. Decoder (LSTM / Transformer)
         self.decoder = MedicalVQADecoder(
             decoder_type=decoder_type, 
-            vocab_size=vocab_size,
-            hidden_size=hidden_size
+            vocab_size=actual_vocab_size,
+            hidden_size=hidden_size,
+            pretrained_embeddings=phobert_embeddings
         )
 
     def forward(self, images, input_ids, attention_mask, labels_open=None, labels_closed=None):

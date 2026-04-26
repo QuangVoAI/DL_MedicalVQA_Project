@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 
 class MedicalVQADecoder(nn.Module):
-    def __init__(self, decoder_type="transformer", vocab_size=30000, hidden_size=768):
+    def __init__(self, decoder_type="transformer", vocab_size=30000, hidden_size=768, pretrained_embeddings=None):
         super(MedicalVQADecoder, self).__init__()
         self.decoder_type = decoder_type.lower()
         self.vocab_size = vocab_size
@@ -16,6 +16,8 @@ class MedicalVQADecoder(nn.Module):
         
         # Nhánh 2: Generator (Hỗ trợ Seq2Seq training)
         self.embedding = nn.Embedding(vocab_size, hidden_size)
+        if pretrained_embeddings is not None:
+            self.embedding.weight.data.copy_(pretrained_embeddings)
         
         if self.decoder_type == "lstm":
             self.generator = nn.LSTM(hidden_size, hidden_size, batch_first=True)
