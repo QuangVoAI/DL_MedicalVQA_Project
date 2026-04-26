@@ -83,7 +83,7 @@ def evaluate_multimodal_vqa(model, dataloader, device, processor, beam_width=1):
             questions_en = translator.translate_vi2en(questions_vi)
             
             # Bao bọc vào Prompt Template chuẩn của LLaVA-1.5 (PHẢI bằng tiếng Anh)
-            prompts = [f"USER: <image>\n{q} Answer briefly in a few words. ASSISTANT:" for q in questions_en]
+            prompts = [f"USER: <image>\n{q} Answer with only one word or a short phrase. ASSISTANT:" for q in questions_en]
             
             if raw_images is not None:
                 inputs = processor(text=prompts, images=raw_images, return_tensors="pt", padding=True).to(device)
@@ -95,7 +95,7 @@ def evaluate_multimodal_vqa(model, dataloader, device, processor, beam_width=1):
 
             output_ids = model.generate(
                 **inputs, 
-                max_new_tokens=20, 
+                max_new_tokens=10, 
                 do_sample=False, 
                 num_beams=beam_width, 
                 early_stopping=True if beam_width > 1 else False

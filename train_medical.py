@@ -188,15 +188,18 @@ def train(args):
             "args": training_args,
             "train_dataset": train_ds,
             "eval_dataset": val_ds,
-            "packing": False,
         }
         
         try:
             print("[INFO] Thử khởi tạo SFTTrainer với processing_class...")
             trainer = SFTTrainer(**trainer_kwargs, processing_class=processor)
         except TypeError:
-            print("[INFO] Fallback: Thử khởi tạo SFTTrainer với tokenizer...")
-            trainer = SFTTrainer(**trainer_kwargs, tokenizer=processor)
+            try:
+                print("[INFO] Fallback: Thử với tokenizer...")
+                trainer = SFTTrainer(**trainer_kwargs, tokenizer=processor)
+            except TypeError:
+                print("[INFO] Fallback: Thử với tokenizer.tokenizer...")
+                trainer = SFTTrainer(**trainer_kwargs, tokenizer=processor.tokenizer)
             
         trainer.train()
         return
