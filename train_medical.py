@@ -255,7 +255,9 @@ def train(args):
         print(f"[INFO] Bắt đầu đánh giá biến thể {args.variant} (LLaVA-Med)...")
         translator = MedicalTranslator(device=device)
         
-        # [FIX] Sử dụng tên lớp chính xác: MultimodalVQA
+        # Load Model & Processor
+        print("[INFO] Đang giải phóng bộ nhớ trước khi nạp LLaVA-Med...")
+        torch.cuda.empty_cache()
         model_wrapper = MultimodalVQA(model_id=config['model_b']['model_name'])
         model_b, processor_b = model_wrapper.load_model()
         

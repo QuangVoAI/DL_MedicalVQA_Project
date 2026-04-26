@@ -24,12 +24,23 @@ class MedicalTranslator:
         
         # 2. Load Models
         try:
-            # MedCrab cho En -> Vi (Trọng tâm)
+            # MedCrab cho En -> Vi (Quantize 4-bit để tránh OOM khi chạy chung với LLaVA)
+            from transformers import BitsAndBytesConfig
+            bnb_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_use_double_quant=True,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_compute_dtype=torch.float16
+            )
+            
             medcrab_id = "pnnbao-ump/MedCrab-1.5B"
             self.tokenizer = AutoTokenizer.from_pretrained(medcrab_id)
             self.model = AutoModelForCausalLM.from_pretrained(
-                medcrab_id, torch_dtype=torch.float16, device_map="auto" if device == "cuda" else None
-            ).to(self.device)
+                medcrab_id, 
+                quantization_config=bnb_config,
+                device_map="auto" if device == "cuda" else None,
+                low_cpu_mem_usage=True
+            )
             
             # Helsinki-NLP cho Vi -> En (Dùng cho câu hỏi, ổn định hơn MedCrab ở mảng này)
             from transformers import pipeline
