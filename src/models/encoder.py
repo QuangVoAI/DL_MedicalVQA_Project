@@ -18,5 +18,6 @@ class MedicalImageEncoder(nn.Module):
         self.projector = nn.Linear(1024, 768) # Map về dimension của PhoBERT
         
     def forward(self, x):
-        features = self.model(x)
+        # features2(x) của XRV trả về vector 1024-d sau Global Average Pooling
+        features = self.model.features2(x)
         return self.projector(features)
