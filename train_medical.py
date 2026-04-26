@@ -37,29 +37,27 @@ def train(args):
     tokenizer = AutoTokenizer.from_pretrained(config['model_a']['phobert_model'])
     transform = MedicalTransform(size=config['data']['image_size'])
     
-    if config['data'].get(os.environ.get("HF_TOKEN", "")):
-        print(f"[INFO] Đang tải dữ liệu từ Hub: {config['data'][os.environ.get("HF_TOKEN", "")]}")
-        dataset_dict = load_dataset(config['data'][os.environ.get("HF_TOKEN", "")])
-        
-        if args.debug:
-            print("[WARNING] DEBUG MODE: Chỉ lấy 20 mẫu từ Hub để test.")
-            for split in dataset_dict.keys():
-                dataset_dict[split] = dataset_dict[split].select(range(min(20, len(dataset_dict[split]))))
-            config['epochs'] = 2
-            config['train']['batch_size'] = 2
-
+    # [FIX] Logic nạp dữ liệu: Ưu tiên Hub nếu có hf_dataset
+    hf_repo = config['data'].get('hf_dataset')
+    if hf_repo:
+        print(f"[INFO] Đang tải dữ liệu từ Hub: {hf_repo}")
+        dataset_dict = load_dataset(hf_repo)
         train_ds = MedicalVQADataset(hf_dataset=dataset_dict['train'], tokenizer=tokenizer, transform=transform)
         val_ds = MedicalVQADataset(hf_dataset=dataset_dict['validation'], tokenizer=tokenizer, transform=transform)
         test_ds = MedicalVQADataset(hf_dataset=dataset_dict['test'], tokenizer=tokenizer, transform=transform)
     else:
-        print(f"[INFO] Đang tải dữ liệu cục bộ từ: {config['data']['vqa_json']}")
+        vqa_path = config['data']['vqa_json']
+        if not os.path.exists(vqa_path):
+            # Fallback nếu không tìm thấy file _cleaned
+            vqa_path = vqa_path.replace("_cleaned", "")
+            
+        print(f"[INFO] Đang tải dữ liệu cục bộ từ: {vqa_path}")
         full_dataset = MedicalVQADataset(
-            json_path=config['data']['vqa_json'],
+            json_path=vqa_path,
             image_dir=config['data']['image_dir'],
             tokenizer=tokenizer,
             transform=transform
         )
-        
         if args.debug:
             print("[WARNING] DEBUG MODE: Chỉ lấy 20 mẫu từ dữ liệu cục bộ để test.")
             full_dataset.data = full_dataset.data[:20]
