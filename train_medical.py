@@ -142,24 +142,20 @@ def train(args):
         return
 
     elif args.variant == 'DPO':
+        from trl import DPOTrainer
+        from transformers import TrainingArguments
+        from datasets import Dataset as HFDataset
+        import json
+        
         wrapper = MultimodalVQA(model_id=config['model_b']['model_name'])
         model, processor = wrapper.load_model()
-        
-        # Load Reference Model cho DPO (bản sao đóng băng)
-        ref_wrapper = MultimodalVQA(model_id=config['model_b']['model_name'])
-        reference_model, _ = ref_wrapper.load_model()
-        
-        optimizer = optim.AdamW(model.parameters(), lr=float(config['train'].get('dpo_lr', 5e-7)))
         
         # Tạo/Load Preference Data
         pref_json = config.get('dpo', {}).get('preference_data', 'data/preference_data_slake.json')
         if not os.path.exists(pref_json):
             print(f"[INFO] Chưa có preference data. Đang tự động tạo từ training data...")
             from src.engine.dpo_trainer import create_preference_data
-            # Tạo từ raw HF dataset hoặc local JSON
             if hf_repo:
-                # Export HF dataset sang JSON tạm để tạo preference pairs
-                import json
                 raw_data = [{"question_vi": item["question_vi"], "answer_vi": item["answer_vi"], 
                              "image_name": item.get("image_name", f"img_{i}.png")} 
                             for i, item in enumerate(dataset_dict['train'])]
@@ -171,32 +167,53 @@ def train(args):
             else:
                 create_preference_data(config['data']['vqa_json'], pref_json, num_pairs=200)
         
-        # Tạo DPO Dataset (is_dpo=True → trả về chosen_ids/rejected_ids)
-        dpo_ds = MedicalVQADataset(
-            json_path=pref_json,
-            image_dir=config['data'].get('image_dir', 'data/images'),
-            tokenizer=tokenizer,
-            transform=transform,
-            is_dpo=True
+        # Đọc file JSON preference data
+        with open(pref_json, 'r', encoding='utf-8') as f:
+            pref_data = json.load(f)
+            
+        # Chuẩn bị HF Dataset cho DPOTrainer (yêu cầu cột: prompt, chosen, rejected)
+        prompts, chosens, rejecteds = [], [], []
+        for item in pref_data:
+            q = item.get("question", "")
+            # LLaVA cần prompt định dạng chứa <image>
+            prompts.append(f"USER: <image>\n{q} ASSISTANT:")
+            # Kèm theo một khoảng trắng ở đầu (quy ước của TRL cho chosen/rejected)
+            chosens.append(f" {item.get('chosen', '')}")
+            rejecteds.append(f" {item.get('rejected', '')}")
+            
+        dpo_hf_dataset = HFDataset.from_dict({
+            "prompt": prompts,
+            "chosen": chosens,
+            "rejected": rejecteds
+        })
+        
+        training_args = TrainingArguments(
+            output_dir="./checkpoints/DPO",
+            per_device_train_batch_size=config['train'].get('dpo_batch_size', 2),
+            num_train_epochs=config['train'].get('dpo_epochs', 3),
+            bf16=True, # LLaVA 4-bit dùng bfloat16
+            remove_unused_columns=False,
+            logging_steps=10
         )
         
-        dpo_loader = DataLoader(
-            dpo_ds,
-            batch_size=config['train'].get('dpo_batch_size', 2),
-            shuffle=True,
-            collate_fn=vqa_collate_fn
-        )
+        dpo_kwargs = {
+            "model": model,
+            "args": training_args,
+            "train_dataset": dpo_hf_dataset,
+            "beta": float(config.get('dpo', {}).get('beta', 0.1))
+        }
         
-        from src.engine.dpo_trainer import MedicalDPOTrainer
-        trainer = MedicalDPOTrainer(
-            model=model,
-            reference_model=reference_model,
-            train_loader=dpo_loader,
-            optimizer=optimizer,
-            device=device,
-            config=config
-        )
-        trainer.train(epochs=config['train'].get('dpo_epochs', 3))
+        try:
+            print("[INFO] Thử khởi tạo DPOTrainer với processing_class...")
+            trainer = DPOTrainer(**dpo_kwargs, processing_class=processor)
+        except TypeError:
+            try:
+                trainer = DPOTrainer(**dpo_kwargs, tokenizer=processor)
+            except TypeError:
+                trainer = DPOTrainer(**dpo_kwargs, tokenizer=processor.tokenizer)
+
+        print("[INFO] Bắt đầu huấn luyện DPO...")
+        trainer.train()
         os.makedirs("checkpoints", exist_ok=True)
         torch.save(model.state_dict(), f"checkpoints/medical_vqa_dpo.pth")
         print("[SUCCESS] Đã lưu checkpoint DPO.")
