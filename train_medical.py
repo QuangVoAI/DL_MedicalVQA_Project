@@ -236,7 +236,7 @@ def train(args):
             output_dir="./checkpoints/B2",
             per_device_train_batch_size=config['train']['batch_size'],
             num_train_epochs=config['train'].get('epochs', 3),
-            fp16=True,
+            bf16=True,
             remove_unused_columns=False,
             logging_steps=10
         )
