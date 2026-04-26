@@ -250,7 +250,6 @@ def train(args):
     # 4. Chạy Zero-shot / Eval cho Hướng B (B1 và B2 sau khi đã fine-tune)
     if args.variant in ['B1', 'B2']:
         from src.engine.medical_eval import evaluate_multimodal_vqa
-        from src.models.multimodal_vqa import MultimodalVQA
         from src.utils.translator import MedicalTranslator
         
         print(f"[INFO] Bắt đầu đánh giá biến thể {args.variant} (LLaVA-Med)...")
