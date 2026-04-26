@@ -120,9 +120,10 @@ def train(args):
         num_workers=config['train'].get('num_workers', 0),
         pin_memory=config['train'].get('pin_memory', False)
     )
+    eval_batch_size = config['train'].get('eval_batch_size', config['train']['batch_size'])
     val_loader = DataLoader(
         val_ds, 
-        batch_size=config['train']['batch_size'], 
+        batch_size=eval_batch_size, 
         collate_fn=vqa_collate_fn,
         num_workers=config['train'].get('num_workers', 0),
         pin_memory=config['train'].get('pin_memory', False)
@@ -134,8 +135,11 @@ def train(args):
         decoder_type = "lstm" if args.variant == 'A1' else "transformer"
         model = MedicalVQAModelA(
             decoder_type=decoder_type, 
-            vocab_size=vocab_size
+            vocab_size=vocab_size,
+            hidden_size=config['model_a'].get('hidden_size', 768),
+            phobert_model=config['model_a'].get('phobert_model', "vinai/phobert-base")
         ).to(device)
+        
         # 3.1. Tách parameter groups cho PhoBERT (Fine-tune nhẹ) và Decoder (Train mạnh)
         phobert_params = []
         other_params = []

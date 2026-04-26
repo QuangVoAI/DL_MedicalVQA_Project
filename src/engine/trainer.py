@@ -14,7 +14,10 @@ class MedicalVQATrainer:
         self.config = config
         
         self.criterion_closed = nn.CrossEntropyLoss()
-        self.criterion_open = nn.CrossEntropyLoss(ignore_index=pad_token_id)
+        self.criterion_open = nn.CrossEntropyLoss(
+            ignore_index=pad_token_id, 
+            label_smoothing=config['train'].get('label_smoothing', 0.0)
+        )
         
         # AMP (Automatic Mixed Precision)
         self.use_amp = config['train'].get('use_amp', False) and device.type == 'cuda'

@@ -12,9 +12,9 @@ class MedicalTranslator:
         
         try:
             # Vi -> En
-            self.vi2en = pipeline("translation", model="Helsinki-NLP/opus-mt-vi-en", device=self.device)
+            self.vi2en = pipeline("translation_vi_to_en", model="Helsinki-NLP/opus-mt-vi-en", device=self.device)
             # En -> Vi
-            self.en2vi = pipeline("translation", model="Helsinki-NLP/opus-mt-en-vi", device=self.device)
+            self.en2vi = pipeline("translation_en_to_vi", model="Helsinki-NLP/opus-mt-en-vi", device=self.device)
         except Exception as e:
             print(f"[WARNING] Không thể load mô hình dịch thuật: {e}")
             self.vi2en = None

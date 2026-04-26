@@ -31,6 +31,7 @@ class MultimodalVQA:
     def load_model(self):
         print(f"[INFO] Đang tải LLaVA-Med-v1.5-7B với chế độ 4-bit...")
         processor = LlavaProcessor.from_pretrained(self.model_id)
+        processor.tokenizer.padding_side = "left" # Bắt buộc cho decoder-only models
         model = LlavaForConditionalGeneration.from_pretrained(
             self.model_id,
             quantization_config=self.bnb_config,
