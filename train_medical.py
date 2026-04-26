@@ -200,7 +200,6 @@ def train(args):
             "model": model,
             "args": training_args,
             "train_dataset": dpo_hf_dataset,
-            "beta": float(config.get('dpo', {}).get('beta', 0.1))
         }
         
         try:
