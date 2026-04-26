@@ -241,7 +241,7 @@ def train(args):
             args=training_args,
             train_dataset=train_ds,
             eval_dataset=val_ds,
-            tokenizer=processor.tokenizer,
+            processing_class=processor,
             packing=False,
         )
         trainer.train()
@@ -252,12 +252,14 @@ def train(args):
         from src.engine.medical_eval import evaluate_multimodal_vqa
         from src.utils.translator import MedicalTranslator
         
-        print(f"[INFO] Bắt đầu đánh giá biến thể {args.variant} (LLaVA-Med)...")
+        # 1. Khởi tạo Translator (Lúc này chưa nạp model vào VRAM nhờ Lazy Loading)
         translator = MedicalTranslator(device=device)
         
-        # Load Model & Processor
+        # 2. Giải phóng bộ nhớ tối đa cho LLaVA-Med
         print("[INFO] Đang giải phóng bộ nhớ trước khi nạp LLaVA-Med...")
         torch.cuda.empty_cache()
+        
+        # 3. Nạp Model VQA nặng nhất
         model_wrapper = MultimodalVQA(model_id=config['model_b']['model_name'])
         model_b, processor_b = model_wrapper.load_model()
         

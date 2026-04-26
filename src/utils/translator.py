@@ -1,31 +1,36 @@
 import torch
 import json
 import os
-from transformers import AutoTokenizer, AutoModelForCausalLM
-from underthesea import word_tokenize
+from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 
 class MedicalTranslator:
     """
-    Lớp dịch thuật nâng cao sử dụng MedCrab-1.5B (SOTA English-Vietnamese Medical Translation).
-    Thay thế Helsinki-NLP để đạt độ chính xác y khoa cao nhất.
+    Lớp dịch thuật nâng cao với cơ chế Lazy Loading để tránh OOM.
     """
     def __init__(self, device="cpu", dict_path="data/medical_dict.json"):
+        self.device_type = device
         self.device = torch.device("cuda" if device == "cuda" and torch.cuda.is_available() else "cpu")
-        print(f"[INFO] Khởi tạo Translation Layer với MedCrab-1.5B ({self.device})")
+        self.dict_path = dict_path
         
-        # 1. Load MedDict (Dùng để kiểm tra/hậu xử lý nếu cần)
+        self.tokenizer = None
+        self.model = None
+        self.vi2en = None
+        self.is_ready = False
         self.med_dict = {}
+        
         if os.path.exists(dict_path):
             try:
                 with open(dict_path, 'r', encoding='utf-8') as f:
                     self.med_dict = json.load(f)
-                self.inv_med_dict = {v.lower(): k.lower() for k, v in self.med_dict.items()}
             except: pass
+
+    def _lazy_load(self):
+        """Chỉ nạp model khi thực sự cần dịch."""
+        if self.is_ready: return
         
-        # 2. Load Models
+        print(f"[INFO] Đang nạp Translation Models (Lazy Load)...")
         try:
-            # MedCrab cho En -> Vi (Quantize 4-bit để tránh OOM khi chạy chung với LLaVA)
-            from transformers import BitsAndBytesConfig
+            # 1. MedCrab (4-bit)
             bnb_config = BitsAndBytesConfig(
                 load_in_4bit=True,
                 bnb_4bit_use_double_quant=True,
@@ -38,32 +43,31 @@ class MedicalTranslator:
             self.model = AutoModelForCausalLM.from_pretrained(
                 medcrab_id, 
                 quantization_config=bnb_config,
-                device_map="auto" if device == "cuda" else None,
+                device_map="auto" if self.device_type == "cuda" else None,
                 low_cpu_mem_usage=True
             )
             
-            # Helsinki-NLP cho Vi -> En (Dùng cho câu hỏi, ổn định hơn MedCrab ở mảng này)
+            # 2. Helsinki-NLP (Ép chạy trên CPU để tiết kiệm VRAM cho LLaVA)
             from transformers import pipeline
-            self.vi2en = pipeline("translation", model="Helsinki-NLP/opus-mt-vi-en", device=0 if device == "cuda" else -1)
+            self.vi2en = pipeline("translation_vi_to_en", model="Helsinki-NLP/opus-mt-vi-en", device=-1)
             
             self.is_ready = True
+            print("[INFO] Translation Layer đã sẵn sàng.")
         except Exception as e:
-            print(f"[WARNING] Lỗi nạp model dịch: {e}. Fallback enabled.")
-            self.is_ready = False
+            print(f"[WARNING] Lỗi Lazy Load: {e}")
 
     def _gen_medcrab_en2vi(self, text):
-        """Dịch En -> Vi bằng MedCrab với ràng buộc ngắn gọn."""
+        self._lazy_load()
         if not self.is_ready: return text
         
-        # Prompt ép model trả lời cực ngắn
         prompt = f"English: {text}\nVietnamese (trả lời ngắn gọn):"
         inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
         
         with torch.no_grad():
             outputs = self.model.generate(
                 **inputs,
-                max_new_tokens=30,           # Giới hạn độ dài (~10-15 từ tiếng Việt)
-                repetition_penalty=1.2,      # Chống lặp từ (Fix bug lặp vô hạn)
+                max_new_tokens=30,
+                repetition_penalty=1.2,
                 temperature=0.1,
                 do_sample=False,
                 pad_token_id=self.tokenizer.eos_token_id
@@ -71,11 +75,10 @@ class MedicalTranslator:
         
         full_text = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
         translated = full_text.split("Vietnamese (trả lời ngắn gọn):")[-1].strip()
-        # Cắt nếu vẫn quá dài (hậu xử lý cứng)
         return " ".join(translated.split()[:12])
 
     def translate_vi2en(self, text):
-        """Dùng Helsinki-NLP để dịch câu hỏi sang tiếng Anh (Ổn định cho Zero-shot)."""
+        self._lazy_load()
         if not text or not self.is_ready: return text
         try:
             if isinstance(text, list):
@@ -86,20 +89,15 @@ class MedicalTranslator:
         except: return text
 
     def translate_en2vi(self, text):
-        """Dịch kết quả từ LLaVA-Med sang Tiếng Việt."""
         if not text: return text
         
-        # 1. Ánh xạ trực tiếp các nhãn nhị phân (Độ chính xác cao nhất cho Y khoa)
         if isinstance(text, str):
             text_lower = text.lower().strip().replace(".", "").replace(",", "")
-            # Mapping nhanh
             if text_lower in ["yes", "correct", "true", "normal", "present"]: return "có"
             if text_lower in ["no", "incorrect", "false", "abnormal", "absent"]: return "không"
-            # Kiểm tra chứa từ khóa
             if any(w in text_lower for w in ["normal", "no abnormality"]): return "bình thường"
             if any(w in text_lower for w in ["abnormal", "pathology"]): return "bất thường"
         
-        # 2. Dịch bằng MedCrab cho các câu mô tả
         if isinstance(text, list):
             return [self._gen_medcrab_en2vi(t) for t in text]
         return self._gen_medcrab_en2vi(text)
