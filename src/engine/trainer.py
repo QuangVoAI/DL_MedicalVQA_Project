@@ -36,7 +36,11 @@ class MedicalVQATrainer:
             
             # Sử dụng AMP Autocast
             with torch.cuda.amp.autocast(enabled=self.use_amp):
-                logits_closed, logits_open = self.model(images, input_ids, attention_mask, target_ids)
+                # Teacher Forcing: Input là <s> A B, Target là A B </s>
+                decoder_input = target_ids[:, :-1]
+                decoder_target = target_ids[:, 1:]
+                
+                logits_closed, logits_open = self.model(images, input_ids, attention_mask, decoder_input)
                 
                 # Loss calculation
                 loss = 0
@@ -44,9 +48,9 @@ class MedicalVQATrainer:
                 if mask_closed.any():
                     loss += self.criterion_closed(logits_closed[mask_closed], label_closed[mask_closed])
                 
-                # Loss generator (Open-ended)
+                # Loss generator (Open-ended) - So khớp với decoder_target
                 vocab_size = logits_open.size(-1)
-                loss += self.criterion_open(logits_open.view(-1, vocab_size), target_ids.view(-1))
+                loss += self.criterion_open(logits_open.reshape(-1, vocab_size), decoder_target.reshape(-1))
             
             # Backward với GradScaler
             self.scaler.scale(loss).backward()

@@ -149,7 +149,10 @@ class MedicalVQADecoder(nn.Module):
                 c0 = torch.zeros_like(h0)
                 outputs, _ = self.generator(target_emb, (h0, c0))
             else:
-                outputs = self.generator(target_emb, fused_features)
+                # Transformer cần causal mask để không nhìn trước tương lai
+                tgt_mask = self._generate_square_subsequent_mask(target_ids.size(1)).to(target_ids.device)
+                # fused_features: [B, 1, 768] -> memory cho Transformer
+                outputs = self.generator(target_emb, fused_features, tgt_mask=tgt_mask)
                 
             logits_open = self.output_layer(outputs) # [B, SeqLen, Vocab]
         else:

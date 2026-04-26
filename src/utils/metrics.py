@@ -54,10 +54,12 @@ def compute_bertscore(preds: list[str], refs: list) -> float:
     if not bert_scorer or not preds or not refs:
         return 0.0
     
-    clean_preds = [normalize_answer(p) for p in preds]
+    clean_preds = [normalize_answer(p) if normalize_answer(p).strip() else "." for p in preds]
     clean_refs = [majority_answer(r) if isinstance(r, list) else normalize_answer(r) for r in refs]
+    clean_refs = [r if r.strip() else "." for r in clean_refs]
     
     try:
+        # Tăng tốc bằng cách tắt idf nếu cần
         P, R, F1 = bert_scorer.score(clean_preds, clean_refs)
         return float(F1.mean().item())
     except Exception as e:

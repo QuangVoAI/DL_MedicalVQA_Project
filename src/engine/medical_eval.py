@@ -47,7 +47,7 @@ def evaluate_vqa(model, dataloader, device, tokenizer, beam_width=1):
                 print("--------------------------\n")
             
             all_preds.extend(preds_text)
-            all_refs.extend(batch['raw_answer'])
+            all_refs.extend(batch.get('raw_answer_en', batch['raw_answer']))
             is_closed = (batch['label_closed'] != -1).tolist()
             all_is_closed.extend(is_closed)
 
@@ -64,26 +64,34 @@ def evaluate_vqa(model, dataloader, device, tokenizer, beam_width=1):
     return metrics
 
 def evaluate_multimodal_vqa(model, dataloader, device, processor, beam_width=1):
-    # ... (giữ nguyên code cũ)
     model.eval()
     all_preds = []
     all_refs = []
     all_is_closed = []
     
+    # Khởi tạo Translator cho Hướng B (Zero-shot)
+    from src.utils.translator import MedicalTranslator
+    translator = MedicalTranslator(device=device.type)
+    
     with torch.no_grad():
         for batch in tqdm(dataloader, desc="Evaluating Multimodal"):
             raw_images = batch.get('raw_image')
-            questions = batch.get('raw_questions')
+            # Lấy câu hỏi tiếng Việt để dịch (đảm bảo tính nhất quán cho bài toán Tiếng Việt)
+            questions_vi = batch.get('raw_questions')
+            
+            # Bước 1: Dịch Vi -> En
+            questions_en = translator.translate_vi2en(questions_vi)
+            
+            # Bao bọc vào Prompt Template chuẩn của LLaVA-1.5
+            prompts = [f"USER: <image>\n{q} ASSISTANT:" for q in questions_en]
             
             if raw_images is not None:
-                inputs = processor(text=questions, images=raw_images, return_tensors="pt", padding=True).to(device)
+                inputs = processor(text=prompts, images=raw_images, return_tensors="pt", padding=True).to(device)
                 if "pixel_values" in inputs:
                     inputs["pixel_values"] = inputs["pixel_values"].to(torch.bfloat16)
             else:
-                inputs = {
-                    "pixel_values": batch['image'].to(device).to(torch.bfloat16), 
-                    "input_ids": batch['input_ids'].to(device)
-                }
+                # Fallback
+                inputs = processor(text=prompts, return_tensors="pt", padding=True).to(device)
 
             output_ids = model.generate(
                 **inputs, 
@@ -94,9 +102,22 @@ def evaluate_multimodal_vqa(model, dataloader, device, processor, beam_width=1):
             )
             input_token_len = inputs.input_ids.shape[1]
             new_tokens = output_ids[:, input_token_len:]
-            preds_text = processor.batch_decode(new_tokens, skip_special_tokens=True)
+            preds_en = processor.batch_decode(new_tokens, skip_special_tokens=True)
             
-            all_preds.extend(preds_text)
+            # Bước 2: Dịch En -> Vi để có kết quả Tiếng Việt như user yêu cầu
+            preds_vi = translator.translate_en2vi(preds_en)
+            
+            # Debug mẫu đầu tiên
+            if len(all_preds) == 0:
+                print("\n--- DEBUG B1 (Zero-shot + Translation) ---")
+                print(f"Q (Vi): {questions_vi[0]}")
+                print(f"Q (En): {questions_en[0]}")
+                print(f"Pred (En): {preds_en[0]}")
+                print(f"Pred (Vi): {preds_vi[0]}")
+                print(f"GT (Vi): {batch['raw_answer'][0]}")
+                print("------------------------------------------\n")
+
+            all_preds.extend(preds_vi)
             all_refs.extend(batch['raw_answer'])
             is_closed = (batch['label_closed'] != -1).tolist()
             all_is_closed.extend(is_closed)

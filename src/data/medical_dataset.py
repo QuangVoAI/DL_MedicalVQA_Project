@@ -70,6 +70,8 @@ class MedicalVQADataset(Dataset):
         # 2. Xử lý câu hỏi
         q_key = "question" if self.is_dpo else "question_vi"
         raw_question = item[q_key]
+        raw_question_en = item.get("question", raw_question) # Lấy bản tiếng Anh nếu có
+        
         question = text_normalize(raw_question)
         encoding = self.tokenizer(
             question,
@@ -91,6 +93,7 @@ class MedicalVQADataset(Dataset):
                 "image": image,
                 "raw_image": raw_image,
                 "raw_questions": raw_question,
+                "raw_questions_en": raw_question_en,
                 "input_ids": encoding["input_ids"].flatten(),
                 "chosen_ids": chosen_encoding["input_ids"].flatten(),
                 "rejected_ids": rejected_encoding["input_ids"].flatten(),
@@ -98,6 +101,7 @@ class MedicalVQADataset(Dataset):
         
         # 3. Xử lý câu trả lời chuẩn (Non-DPO)
         answer = normalize_answer(item["answer_vi"])
+        answer_en = normalize_answer(item.get("answer", answer)) # Lấy bản tiếng Anh nếu có
         label_closed = self.label_map.get(answer, -1)
         
         ans_encoding = self.tokenizer(
@@ -112,9 +116,11 @@ class MedicalVQADataset(Dataset):
             "image": image,
             "raw_image": raw_image,
             "raw_questions": raw_question,
+            "raw_questions_en": raw_question_en,
             "input_ids": encoding["input_ids"].flatten(),
             "attention_mask": encoding["attention_mask"].flatten(),
             "label_closed": torch.tensor(label_closed, dtype=torch.long),
             "target_ids": ans_encoding["input_ids"].flatten(),
-            "raw_answer": answer
+            "raw_answer": answer,
+            "raw_answer_en": answer_en
         }
