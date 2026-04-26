@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 from tqdm import tqdm
 
-class Trainer:
+class MedicalVQATrainer:
     def __init__(self, model, train_loader, val_loader, optimizer, device, config, scheduler=None, pad_token_id=0):
         self.model = model
         self.train_loader = train_loader
