@@ -22,66 +22,73 @@ class MedicalTranslator:
                 self.inv_med_dict = {v.lower(): k.lower() for k, v in self.med_dict.items()}
             except: pass
         
-        # 2. Load MedCrab-1.5B
+        # 2. Load Models
         try:
-            model_id = "pnnbao-ump/MedCrab-1.5B"
-            self.tokenizer = AutoTokenizer.from_pretrained(model_id)
-            # Nạp ở FP16 để tiết kiệm VRAM cho LLaVA-Med
+            # MedCrab cho En -> Vi (Trọng tâm)
+            medcrab_id = "pnnbao-ump/MedCrab-1.5B"
+            self.tokenizer = AutoTokenizer.from_pretrained(medcrab_id)
             self.model = AutoModelForCausalLM.from_pretrained(
-                model_id,
-                torch_dtype=torch.float16,
-                device_map="auto" if device == "cuda" else None
+                medcrab_id, torch_dtype=torch.float16, device_map="auto" if device == "cuda" else None
             ).to(self.device)
+            
+            # Helsinki-NLP cho Vi -> En (Dùng cho câu hỏi, ổn định hơn MedCrab ở mảng này)
+            from transformers import pipeline
+            self.vi2en = pipeline("translation", model="Helsinki-NLP/opus-mt-vi-en", device=0 if device == "cuda" else -1)
+            
             self.is_ready = True
         except Exception as e:
-            print(f"[WARNING] Không thể tải MedCrab-1.5B: {e}. Đang dùng fallback...")
+            print(f"[WARNING] Lỗi nạp model dịch: {e}. Fallback enabled.")
             self.is_ready = False
 
-    def _gen_medcrab(self, text, task="en2vi"):
+    def _gen_medcrab_en2vi(self, text):
+        """Dịch En -> Vi bằng MedCrab với ràng buộc ngắn gọn."""
         if not self.is_ready: return text
         
-        # Prompt chuẩn cho MedCrab (Dựa trên Qwen2.5)
-        if task == "en2vi":
-            prompt = f"English: {text}\nVietnamese:"
-        else:
-            prompt = f"Vietnamese: {text}\nEnglish:"
-            
+        # Prompt ép model trả lời cực ngắn
+        prompt = f"English: {text}\nVietnamese (trả lời ngắn gọn):"
         inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
         
         with torch.no_grad():
             outputs = self.model.generate(
                 **inputs,
-                max_new_tokens=256,
+                max_new_tokens=30,           # Giới hạn độ dài (~10-15 từ tiếng Việt)
+                repetition_penalty=1.2,      # Chống lặp từ (Fix bug lặp vô hạn)
                 temperature=0.1,
                 do_sample=False,
                 pad_token_id=self.tokenizer.eos_token_id
             )
         
         full_text = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
-        # Tách lấy phần trả lời sau "Vietnamese:" hoặc "English:"
-        if task == "en2vi":
-            translated = full_text.split("Vietnamese:")[-1].strip()
-        else:
-            translated = full_text.split("English:")[-1].strip()
-            
-        return translated
+        translated = full_text.split("Vietnamese (trả lời ngắn gọn):")[-1].strip()
+        # Cắt nếu vẫn quá dài (hậu xử lý cứng)
+        return " ".join(translated.split()[:12])
 
     def translate_vi2en(self, text):
-        if not text: return text
-        if isinstance(text, list):
-            return [self._gen_medcrab(t, task="vi2en") for t in text]
-        return self._gen_medcrab(text, task="vi2en")
+        """Dùng Helsinki-NLP để dịch câu hỏi sang tiếng Anh (Ổn định cho Zero-shot)."""
+        if not text or not self.is_ready: return text
+        try:
+            if isinstance(text, list):
+                res = self.vi2en(text)
+                return [r['translation_text'] for r in res]
+            res = self.vi2en(text)
+            return res[0]['translation_text']
+        except: return text
 
     def translate_en2vi(self, text):
+        """Dịch kết quả từ LLaVA-Med sang Tiếng Việt."""
         if not text: return text
         
-        # 1. Chuẩn hóa nhãn (Dành cho Accuracy)
+        # 1. Ánh xạ trực tiếp các nhãn nhị phân (Độ chính xác cao nhất cho Y khoa)
         if isinstance(text, str):
             text_lower = text.lower().strip().replace(".", "").replace(",", "")
-            if any(word in text_lower for word in ["yes", "correct", "true", "normal"]): return "có"
-            if any(word in text_lower for word in ["no", "incorrect", "false", "abnormal"]): return "không"
+            # Mapping nhanh
+            if text_lower in ["yes", "correct", "true", "normal", "present"]: return "có"
+            if text_lower in ["no", "incorrect", "false", "abnormal", "absent"]: return "không"
+            # Kiểm tra chứa từ khóa
+            if any(w in text_lower for w in ["normal", "no abnormality"]): return "bình thường"
+            if any(w in text_lower for w in ["abnormal", "pathology"]): return "bất thường"
         
-        # 2. Dịch bằng MedCrab
+        # 2. Dịch bằng MedCrab cho các câu mô tả
         if isinstance(text, list):
-            return [self._gen_medcrab(t, task="en2vi") for t in text]
-        return self._gen_medcrab(text, task="en2vi")
+            return [self._gen_medcrab_en2vi(t) for t in text]
+        return self._gen_medcrab_en2vi(text)
