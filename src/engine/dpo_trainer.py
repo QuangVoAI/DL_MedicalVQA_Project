@@ -4,6 +4,8 @@ from tqdm import tqdm
 import json
 import os
 
+from src.utils.text_utils import get_target_answer
+
 def create_preference_data(vqa_json_path, output_path, num_pairs=200):
     """
     Tạo dữ liệu Preference (Chosen vs Rejected) cho DPO.
@@ -18,11 +20,11 @@ def create_preference_data(vqa_json_path, output_path, num_pairs=200):
     for i in range(min(num_pairs, len(data))):
         item = data[i]
         # Chosen: Câu trả lời đúng từ ground truth
-        chosen = item['answer_vi']
+        chosen = get_target_answer(item, max_words=10)
         
         # Rejected: Câu trả lời sai (giả lập bằng cách lấy câu trả lời của câu khác hoặc sửa đổi)
         # Ở đây ta lấy câu trả lời của mẫu tiếp theo làm ví dụ
-        rejected = data[(i + 1) % len(data)]['answer_vi']
+        rejected = get_target_answer(data[(i + 1) % len(data)], max_words=10)
         
         pref_data.append({
             "image": item.get("image_name") or item.get("image"),

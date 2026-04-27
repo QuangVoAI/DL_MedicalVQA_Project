@@ -50,5 +50,15 @@ class MultimodalVQA:
         Hàm hỗ trợ tạo prompt cho LLaVA-Med (EN). 
         Nhớ dùng Translation Layer trước khi gọi hàm này.
         """
-        prompt = f"A chat between a curious human and an artificial intelligence assistant. The assistant gives helpful, detailed, and polite answers to the human's questions about the medical image. USER: <image>\n{question_en} ASSISTANT:"
-        return prompt
+        return self.build_instruction_prompt(question_en, language="en", include_answer=False)
+
+    def build_instruction_prompt(self, question, language="vi", include_answer=False):
+        """
+        Prompt thống nhất cho zero-shot, SFT và demo.
+        """
+        if language == "vi":
+            instruction = "Tra loi bang thuat ngu y khoa chuan, ngan gon, toi da 10 tu."
+        else:
+            instruction = "Answer with standard medical terminology, concise, at most 10 words."
+        suffix = " ASSISTANT:" if not include_answer else ""
+        return f"USER: <image>\n{question}\n{instruction}{suffix}"

@@ -14,7 +14,7 @@ from src.models.medical_vqa_model import MedicalVQAModelA
 from src.models.multimodal_vqa import MultimodalVQA
 from src.utils.visualization import MedicalImageTransform as MedicalTransform
 from src.data.medical_dataset import MedicalVQADataset
-from src.utils.metrics import batch_metrics
+from src.utils.text_utils import get_target_answer
 
 def vqa_collate_fn(batch):
     """Hàm gom batch tùy chỉnh để xử lý ảnh PIL và raw text."""
@@ -47,11 +47,15 @@ def train(args):
 
     # 2. Tokenizer & Dataset
     tokenizer = AutoTokenizer.from_pretrained(config['model_a']['phobert_model'])
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token = tokenizer.eos_token or tokenizer.unk_token
     transform = MedicalTransform(size=config['data']['image_size'])
+    answer_max_words = int(config['data'].get('answer_max_words', 10))
     
     # Nạp dữ liệu từ HuggingFace Hub hoặc cục bộ
     hf_repo = config['data'].get('hf_dataset')
-    if hf_repo:
+    use_hf_splits = bool(config['data'].get('use_hf_splits', True))
+    if hf_repo and use_hf_splits:
         print(f"[INFO] Đang tải dữ liệu từ Hub: {hf_repo}")
         dataset_dict = load_dataset(hf_repo)
         
@@ -66,14 +70,16 @@ def train(args):
             tokenizer=tokenizer, 
             transform=transform, 
             max_seq_len=config['data']['max_question_len'],
-            max_ans_len=config['data']['max_answer_len']
+            max_ans_len=config['data']['max_answer_len'],
+            answer_max_words=answer_max_words
         )
         val_ds = MedicalVQADataset(
             hf_dataset=dataset_dict['validation'], 
             tokenizer=tokenizer, 
             transform=transform, 
             max_seq_len=config['data']['max_question_len'],
-            max_ans_len=config['data']['max_answer_len']
+            max_ans_len=config['data']['max_answer_len'],
+            answer_max_words=answer_max_words
         )
     else:
         vqa_path = config['data']['vqa_json']
@@ -84,7 +90,8 @@ def train(args):
             tokenizer=tokenizer,
             transform=transform,
             max_seq_len=config['data']['max_question_len'],
-            max_ans_len=config['data']['max_answer_len']
+            max_ans_len=config['data']['max_answer_len'],
+            answer_max_words=answer_max_words
         )
         train_size = int(0.8 * len(full_dataset))
         val_size = len(full_dataset) - train_size
@@ -173,7 +180,7 @@ def train(args):
             print(f"[INFO] Chưa có preference data. Đang tự động tạo từ training data...")
             from src.engine.dpo_trainer import create_preference_data
             if hf_repo:
-                raw_data = [{"question_vi": item["question_vi"], "answer_vi": item["answer_vi"], 
+                raw_data = [{"question_vi": item["question_vi"], "answer_vi": get_target_answer(item, max_words=answer_max_words), 
                              "image_name": item.get("image_name", f"img_{i}.png")} 
                             for i, item in enumerate(dataset_dict['train'])]
                 tmp_json = "data/tmp_train_for_dpo.json"
@@ -192,7 +199,7 @@ def train(args):
         prompts, chosens, rejecteds = [], [], []
         for item in pref_data:
             q = item.get("question", "")
-            prompts.append(f"USER: <image>\n{q} ASSISTANT:")
+            prompts.append(wrapper.build_instruction_prompt(q, language="vi", include_answer=False))
             chosens.append(f" {item.get('chosen', '')}")
             rejecteds.append(f" {item.get('rejected', '')}")
             
@@ -257,10 +264,11 @@ def train(args):
                 # HF dataset trả về dict, còn MedicalVQADataset trả về dict khác
                 if isinstance(item, dict):
                     q = item.get("question_vi", item.get("question", item.get("raw_questions", "")))
-                    a = item.get("answer_vi", item.get("answer", item.get("raw_answer", "")))
+                    a = get_target_answer(item, max_words=answer_max_words)
                 else:
                     q, a = "", ""
-                texts.append(f"USER: <image>\n{q} ASSISTANT: {a}")
+                prompt = wrapper.build_instruction_prompt(q, language="vi", include_answer=False)
+                texts.append(f"{prompt} {a}")
             return HFDataset.from_dict({"text": texts})
         
         if hf_repo:
@@ -276,7 +284,10 @@ def train(args):
             num_train_epochs=config['train'].get('epochs', 3),
             bf16=True,
             remove_unused_columns=False,
-            logging_steps=10
+            logging_steps=10,
+            evaluation_strategy="epoch",
+            save_strategy="epoch",
+            save_total_limit=3
         )
 
         # Khởi tạo SFTTrainer với cơ chế fallback cho phiên bản TRL
@@ -316,13 +327,16 @@ def train(args):
             val_loader, 
             device, 
             processor, 
-            beam_width=beam_width
+            beam_width=beam_width,
+            max_words=answer_max_words
         )
         
         print(f"\n[RESULT B1]")
         print(f"Accuracy: {metrics.get('accuracy', metrics.get('vqa_accuracy', 0)):.4f}")
         print(f"F1: {metrics.get('f1', 0):.4f}")
         print(f"BLEU-4: {metrics.get('bleu4', 0):.4f}")
+        print(f"BERTScore: {metrics.get('bert_score', 0):.4f}")
+        print(f"Semantic Score: {metrics.get('semantic', 0):.4f}")
         return
 
 if __name__ == "__main__":
