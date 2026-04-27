@@ -142,8 +142,17 @@ class MedicalVQATrainer:
         """
         from src.engine.medical_eval import evaluate_vqa
         max_ans_len = self.config.get('data', {}).get('max_answer_len', 32)
+        max_words = self.config.get('data', {}).get('answer_max_words', 10)
         print(f"\n🔍 Đang chạy Validation cho Epoch {epoch} (max_ans_len={max_ans_len})...")
-        metrics = evaluate_vqa(self.model, self.val_loader, self.device, tokenizer, beam_width=self.beam_width, max_len=max_ans_len)
+        metrics = evaluate_vqa(
+            self.model,
+            self.val_loader,
+            self.device,
+            tokenizer,
+            beam_width=self.beam_width,
+            max_len=max_ans_len,
+            max_words=max_words
+        )
         
         # In các metrics quan trọng
         print(f"[METRICS] Accuracy: {metrics['accuracy']:.4f} | F1: {metrics['f1']:.4f} | BLEU-4: {metrics['bleu4']:.4f}")

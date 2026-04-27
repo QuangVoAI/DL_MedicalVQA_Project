@@ -1,10 +1,25 @@
 import torch
 from tqdm import tqdm
 from src.utils.metrics import batch_metrics
-from src.utils.text_utils import clean_vqa_output
+from src.utils.text_utils import is_medical_term_compliant, postprocess_answer
 
 def normalize_for_metric(text: str) -> str:
     return text.strip().lower()
+
+
+def _compute_format_stats(preds: list[str], max_words: int) -> dict[str, float]:
+    if not preds:
+        return {
+            "max_10_word_compliance_rate": 0.0,
+            "medical_term_compliance_rate": 0.0,
+            "avg_answer_length": 0.0,
+        }
+    word_counts = [len(p.split()) for p in preds]
+    return {
+        "max_10_word_compliance_rate": sum(1 for count in word_counts if count <= max_words) / len(word_counts),
+        "medical_term_compliance_rate": sum(1 for pred in preds if is_medical_term_compliant(pred)) / len(preds),
+        "avg_answer_length": sum(word_counts) / len(word_counts),
+    }
 
 class MedicalVQAEvaluator:
     """
@@ -24,7 +39,7 @@ class MedicalVQAEvaluator:
         else:
             return evaluate_multimodal_vqa(model, dataloader, self.device, self.processor, beam_width)
 
-def evaluate_vqa(model, dataloader, device, tokenizer, beam_width=1, max_len=32):
+def evaluate_vqa(model, dataloader, device, tokenizer, beam_width=1, max_len=32, max_words=10):
     model.eval()
     all_preds = []
     all_refs = []
@@ -41,7 +56,10 @@ def evaluate_vqa(model, dataloader, device, tokenizer, beam_width=1, max_len=32)
             logits_closed, pred_ids = model.inference(images, input_ids, attention_mask, beam_width=beam_width, max_len=max_len)
             
             # Decode generative head + làm sạch subword artifacts
-            preds_text = [clean_vqa_output(t) for t in tokenizer.batch_decode(pred_ids, skip_special_tokens=True)]
+            preds_text = [
+                postprocess_answer(t, max_words=max_words)
+                for t in tokenizer.batch_decode(pred_ids, skip_special_tokens=True)
+            ]
             
             # [CRITICAL FIX] Với câu Đóng (Yes/No), dùng classifier head thay vì generator
             closed_map = {0: "không", 1: "có"}
@@ -49,6 +67,7 @@ def evaluate_vqa(model, dataloader, device, tokenizer, beam_width=1, max_len=32)
             for i in range(len(preds_text)):
                 if labels[i].item() != -1:  # Câu hỏi đóng
                     preds_text[i] = closed_map[closed_preds_idx[i].item()]
+                preds_text[i] = postprocess_answer(preds_text[i], max_words=max_words)
             
             # Debug: Hiển thị cả câu Đóng và câu Mở để kiểm tra đa dạng
             if len(all_preds) == 0:
@@ -69,23 +88,28 @@ def evaluate_vqa(model, dataloader, device, tokenizer, beam_width=1, max_len=32)
             
             all_preds.extend([normalize_for_metric(p) for p in preds_text])
             # [CRITICAL FIX] Dùng đáp án Tiếng Việt để chấm điểm
-            all_refs.extend([normalize_for_metric(r) for r in batch['raw_answer']])
+            all_refs.extend([normalize_for_metric(postprocess_answer(r, max_words=max_words)) for r in batch['raw_answer']])
             is_closed = (batch['label_closed'] != -1).tolist()
             all_is_closed.extend(is_closed)
 
     metrics = batch_metrics(all_preds, all_refs)
+    metrics.update(_compute_format_stats(all_preds, max_words=max_words))
     metrics['predictions'] = all_preds
     metrics['ground_truths'] = all_refs
     
     closed_preds = [p for p, c in zip(all_preds, all_is_closed) if c]
     closed_refs = [r for r, c in zip(all_refs, all_is_closed) if c]
-    if closed_preds: metrics['closed'] = batch_metrics(closed_preds, closed_refs)
+    if closed_preds:
+        metrics['closed'] = batch_metrics(closed_preds, closed_refs)
+        metrics['closed'].update(_compute_format_stats(closed_preds, max_words=max_words))
     open_preds = [p for p, c in zip(all_preds, all_is_closed) if not c]
     open_refs = [r for r, c in zip(all_refs, all_is_closed) if not c]
-    if open_preds: metrics['open'] = batch_metrics(open_preds, open_refs)
+    if open_preds:
+        metrics['open'] = batch_metrics(open_preds, open_refs)
+        metrics['open'].update(_compute_format_stats(open_preds, max_words=max_words))
     return metrics
 
-def evaluate_multimodal_vqa(model, dataloader, device, processor, beam_width=1):
+def evaluate_multimodal_vqa(model, dataloader, device, processor, beam_width=1, max_words=10):
     model.eval()
     all_preds = []
     all_refs = []
@@ -105,7 +129,10 @@ def evaluate_multimodal_vqa(model, dataloader, device, processor, beam_width=1):
             questions_en = translator.translate_vi2en(questions_vi)
             
             # Bao bọc vào Prompt Template chuẩn của LLaVA-1.5 (PHẢI bằng tiếng Anh)
-            prompts = [f"USER: <image>\n{q} Answer with only one word or a short phrase. ASSISTANT:" for q in questions_en]
+            prompts = [
+                f"USER: <image>\n{q}\nAnswer with standard medical terminology, concise, at most {max_words} words. ASSISTANT:"
+                for q in questions_en
+            ]
             
             if raw_images is not None:
                 inputs = processor(text=prompts, images=raw_images, return_tensors="pt", padding=True).to(device)
@@ -117,7 +144,7 @@ def evaluate_multimodal_vqa(model, dataloader, device, processor, beam_width=1):
 
             output_ids = model.generate(
                 **inputs, 
-                max_new_tokens=10, 
+                max_new_tokens=max_words + 4,
                 do_sample=False, 
                 num_beams=beam_width, 
                 early_stopping=True if beam_width > 1 else False
@@ -127,7 +154,7 @@ def evaluate_multimodal_vqa(model, dataloader, device, processor, beam_width=1):
             preds_en = processor.batch_decode(new_tokens, skip_special_tokens=True)
             
             # Bước 2: Dịch En -> Vi để có kết quả Tiếng Việt như user yêu cầu
-            preds_vi = translator.translate_en2vi(preds_en)
+            preds_vi = [postprocess_answer(pred, max_words=max_words) for pred in translator.translate_en2vi(preds_en)]
             
             # Debug mẫu đầu tiên
             if len(all_preds) == 0:
@@ -140,18 +167,23 @@ def evaluate_multimodal_vqa(model, dataloader, device, processor, beam_width=1):
                 print("------------------------------------------\n")
 
             all_preds.extend([normalize_for_metric(p) for p in preds_vi])
-            all_refs.extend([normalize_for_metric(r) for r in batch['raw_answer']])
+            all_refs.extend([normalize_for_metric(postprocess_answer(r, max_words=max_words)) for r in batch['raw_answer']])
             is_closed = (batch['label_closed'] != -1).tolist()
             all_is_closed.extend(is_closed)
 
     metrics = batch_metrics(all_preds, all_refs)
+    metrics.update(_compute_format_stats(all_preds, max_words=max_words))
     metrics['predictions'] = all_preds
     metrics['ground_truths'] = all_refs
     
     closed_preds = [p for p, c in zip(all_preds, all_is_closed) if c]
     closed_refs = [r for r, c in zip(all_refs, all_is_closed) if c]
-    if closed_preds: metrics['closed'] = batch_metrics(closed_preds, closed_refs)
+    if closed_preds:
+        metrics['closed'] = batch_metrics(closed_preds, closed_refs)
+        metrics['closed'].update(_compute_format_stats(closed_preds, max_words=max_words))
     open_preds = [p for p, c in zip(all_preds, all_is_closed) if not c]
     open_refs = [r for r, c in zip(all_refs, all_is_closed) if not c]
-    if open_preds: metrics['open'] = batch_metrics(open_preds, open_refs)
+    if open_preds:
+        metrics['open'] = batch_metrics(open_preds, open_refs)
+        metrics['open'].update(_compute_format_stats(open_preds, max_words=max_words))
     return metrics

@@ -2,6 +2,8 @@ import torch
 import json
 import os
 
+from src.utils.text_utils import postprocess_answer
+
 class MedicalTranslator:
     """
     Dịch thuật y tế với cơ chế Lazy Loading + Independent Fallback.
@@ -128,12 +130,14 @@ class MedicalTranslator:
                 "normal": "bình thường", "abnormal": "bất thường",
             }
             if t in direct_map:
-                return direct_map[t]
+                return postprocess_answer(direct_map[t], max_words=10)
         
         # 2. Dịch bằng MedCrab
         self._lazy_load()
         if not self._en2vi_ready:
-            return text  # Fallback: giữ nguyên tiếng Anh
+            if isinstance(text, list):
+                return [postprocess_answer(t, max_words=10) for t in text]
+            return postprocess_answer(text, max_words=10)
         
         if isinstance(text, list):
             return [self._medcrab_translate(t) for t in text]
@@ -148,7 +152,7 @@ class MedicalTranslator:
             "normal": "bình thường", "abnormal": "bất thường",
         }
         if t in direct_map:
-            return direct_map[t]
+            return postprocess_answer(direct_map[t], max_words=10)
         
         try:
             prompt = f"English: {text}\nVietnamese (trả lời ngắn gọn):"
@@ -166,8 +170,7 @@ class MedicalTranslator:
             
             full_text = self._en2vi_tokenizer.decode(outputs[0], skip_special_tokens=True)
             translated = full_text.split("Vietnamese (trả lời ngắn gọn):")[-1].strip()
-            # Hard limit: tối đa 12 từ
-            return " ".join(translated.split()[:12])
+            return postprocess_answer(translated, max_words=10)
         except Exception as e:
             print(f"[WARNING] En→Vi error: {e}")
-            return text
+            return postprocess_answer(text, max_words=10)

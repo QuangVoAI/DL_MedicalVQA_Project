@@ -3,13 +3,13 @@ from torch.utils.data import Dataset
 from PIL import Image
 import json
 import os
-from src.utils.text_utils import normalize_answer, text_normalize
+from src.utils.text_utils import get_target_answer, normalize_answer, text_normalize
 
 class MedicalVQADataset(Dataset):
     """
     Dataset class chung cho Medical VQA (SLAKE + VQA-RAD).
     """
-    def __init__(self, hf_dataset=None, json_path=None, image_dir=None, tokenizer=None, transform=None, max_seq_len=64, max_ans_len=10, is_dpo=False, in_channels=1):
+    def __init__(self, hf_dataset=None, json_path=None, image_dir=None, tokenizer=None, transform=None, max_seq_len=64, max_ans_len=10, is_dpo=False, in_channels=1, answer_max_words=10):
         if hf_dataset is not None:
             self.data = hf_dataset
             self.use_hf = True
@@ -27,6 +27,7 @@ class MedicalVQADataset(Dataset):
         self.max_ans_len = max_ans_len
         self.is_dpo = is_dpo
         self.in_channels = in_channels
+        self.answer_max_words = answer_max_words
         
         # Mapping for closed questions (Yes/No)
         self.label_map = {"no": 0, "yes": 1, "không": 0, "có": 1}
@@ -93,7 +94,7 @@ class MedicalVQADataset(Dataset):
             }
         
         # 3. Xử lý câu trả lời chuẩn (Non-DPO)
-        answer = normalize_answer(item["answer_vi"])
+        answer = get_target_answer(item, max_words=self.answer_max_words)
         answer_en = normalize_answer(item.get("answer", answer)) # Lấy bản tiếng Anh nếu có
         label_closed = self.label_map.get(answer, -1)
         
@@ -115,5 +116,6 @@ class MedicalVQADataset(Dataset):
             "label_closed": torch.tensor(label_closed, dtype=torch.long),
             "target_ids": ans_encoding["input_ids"].flatten(),
             "raw_answer": answer,
+            "raw_answer_full": normalize_answer(item.get("answer_full_vi", answer)),
             "raw_answer_en": answer_en
         }

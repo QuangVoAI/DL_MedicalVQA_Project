@@ -12,6 +12,7 @@ ckpt_dir: "checkpoints/medical_vqa"
 data:
   dataset_name: "slake_vqa_rad_merged"
   hf_dataset: "SpringWang08/medical-vqa-vi"        # [NEW] Dataset trên Hub
+  use_hf_splits: true
   vqa_json: "data/merged_vqa_vi_cleaned.json"
   image_dir: "data/images"
   manual_test_json: "data/manual_test_set.json" # 50+ mẫu test thủ công (bắt buộc)
@@ -20,7 +21,11 @@ data:
   test_ratio: 0.10
   image_size: 224
   max_question_len: 64      # PhoBERT max tokens
-  max_answer_len: 32        # [OPTIMIZED] Tăng từ 10 lên 32 để hỗ trợ câu mô tả bệnh lý dài
+  max_answer_len: 20        # token budget cho đáp án ngắn <=10 từ
+  answer_max_words: 10
+  use_short_answer_targets: true
+  normalize_medical_terms: true
+  postprocess_answer: true
 
 # ── Hướng A: Kiến trúc rời (Modular Architecture) ──
 model_a:
