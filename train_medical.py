@@ -122,8 +122,18 @@ def train(args):
             {'params': model.decoder.parameters(), 'lr': float(config['train']['learning_rate'])}
         ])
         
-        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=config['train']['epochs'])
+        # [CRITICAL FIX] Dùng Cosine Schedule với Warmup, step theo batch thay vì epoch
+        from transformers import get_cosine_schedule_with_warmup
+        epochs = config['train']['epochs']
+        warmup_epochs = config['train'].get('warmup_epochs', 5)
+        total_steps = epochs * len(train_loader)
+        warmup_steps = warmup_epochs * len(train_loader)
         
+        scheduler = get_cosine_schedule_with_warmup(
+            optimizer, 
+            num_warmup_steps=warmup_steps, 
+            num_training_steps=total_steps
+        )        
         # Khởi tạo Trainer với pad_token_id và beam_width từ config
         beam_width = config['eval'].get('beam_width_a', 5)
         from src.engine.trainer import MedicalVQATrainer

@@ -3,6 +3,9 @@ from tqdm import tqdm
 from src.utils.metrics import batch_metrics
 from src.utils.text_utils import clean_vqa_output
 
+def normalize_for_metric(text: str) -> str:
+    return text.strip().lower()
+
 class MedicalVQAEvaluator:
     """
     Hệ thống đánh giá hợp nhất cho cả Hướng A và Hướng B.
@@ -64,9 +67,9 @@ def evaluate_vqa(model, dataloader, device, tokenizer, beam_width=1, max_len=32)
                         break
                 print("--------------------------\n")
             
-            all_preds.extend(preds_text)
+            all_preds.extend([normalize_for_metric(p) for p in preds_text])
             # [CRITICAL FIX] Dùng đáp án Tiếng Việt để chấm điểm
-            all_refs.extend(batch['raw_answer'])
+            all_refs.extend([normalize_for_metric(r) for r in batch['raw_answer']])
             is_closed = (batch['label_closed'] != -1).tolist()
             all_is_closed.extend(is_closed)
 
@@ -136,8 +139,8 @@ def evaluate_multimodal_vqa(model, dataloader, device, processor, beam_width=1):
                 print(f"GT (Vi): {batch['raw_answer'][0]}")
                 print("------------------------------------------\n")
 
-            all_preds.extend(preds_vi)
-            all_refs.extend(batch['raw_answer'])
+            all_preds.extend([normalize_for_metric(p) for p in preds_vi])
+            all_refs.extend([normalize_for_metric(r) for r in batch['raw_answer']])
             is_closed = (batch['label_closed'] != -1).tolist()
             all_is_closed.extend(is_closed)
 

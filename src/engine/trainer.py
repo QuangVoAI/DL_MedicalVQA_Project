@@ -15,10 +15,11 @@ class MedicalVQATrainer:
         self.config = config
         self.beam_width = beam_width
         
-        # [FIX] Tính class weights tự động từ phân phối Yes/No trong training data
-        closed_weights = self._compute_closed_weights(train_loader)
-        self.criterion_closed = nn.CrossEntropyLoss(weight=closed_weights.to(device))
-        print(f"[INFO] Closed-head class weights: không={closed_weights[0]:.3f}, có={closed_weights[1]:.3f}")
+        # [FIX] Đặt class weights thủ công để boost class "có" (index 1) giảm class imbalance
+        self.criterion_closed = nn.CrossEntropyLoss(
+            weight=torch.tensor([1.0, 2.5]).to(device)
+        )
+        print("[INFO] Closed-head class weights manually set: không=1.0, có=2.5")
         
         self.criterion_open = nn.CrossEntropyLoss(
             ignore_index=pad_token_id, 
@@ -116,6 +117,10 @@ class MedicalVQATrainer:
             self.scaler.step(self.optimizer)
             self.scaler.update()
             
+            # [CRITICAL FIX] Step scheduler sau mỗi batch thay vì epoch để warmup mượt hơn
+            if self.scheduler:
+                self.scheduler.step()
+                
             total_loss += loss.item()
             # [FIX] Log LR cho từng param group — hiển thị decoder LR (group cuối) trên progress bar
             decoder_lr = self.optimizer.param_groups[-1]['lr']
@@ -127,10 +132,6 @@ class MedicalVQATrainer:
                     "lr_decoder": decoder_lr,
                 })
             pbar.set_postfix({"loss": f"{loss.item():.3f}", "dec_lr": f"{decoder_lr:.1e}", "vis_lr": f"{vision_lr:.1e}"})
-            
-        # Step scheduler sau mỗi epoch
-        if self.scheduler:
-            self.scheduler.step()
             
         return total_loss / len(self.train_loader)
 
@@ -179,6 +180,19 @@ class MedicalVQATrainer:
                 variant = self.config.get('variant', 'A')
                 save_path = os.path.join(ckpt_dir, f"medical_vqa_{variant}_best.pth")
                 torch.save(self.model.state_dict(), save_path)
+                
+                # [CRITICAL FIX] Lưu checkpoint riêng hỗ trợ resume để không bị mất warmup/scheduler state
+                resume_path = os.path.join(ckpt_dir, f"medical_vqa_{variant}_resume.pth")
+                checkpoint = {
+                    'epoch': epoch,
+                    'model_state_dict': self.model.state_dict(),
+                    'optimizer_state_dict': self.optimizer.state_dict(),
+                    'best_val_acc': best_val_acc
+                }
+                if self.scheduler:
+                    checkpoint['scheduler_state_dict'] = self.scheduler.state_dict()
+                torch.save(checkpoint, resume_path)
+                
                 print(f"🌟 Best model saved with Accuracy: {val_acc:.4f}")
             else:
                 counter += 1
