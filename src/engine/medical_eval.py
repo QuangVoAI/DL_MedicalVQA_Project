@@ -1,6 +1,7 @@
 import torch
 from tqdm import tqdm
 from src.utils.metrics import batch_metrics
+from src.utils.text_utils import clean_vqa_output
 
 class MedicalVQAEvaluator:
     """
@@ -20,7 +21,7 @@ class MedicalVQAEvaluator:
         else:
             return evaluate_multimodal_vqa(model, dataloader, self.device, self.processor, beam_width)
 
-def evaluate_vqa(model, dataloader, device, tokenizer, beam_width=1):
+def evaluate_vqa(model, dataloader, device, tokenizer, beam_width=1, max_len=32):
     model.eval()
     all_preds = []
     all_refs = []
@@ -31,23 +32,41 @@ def evaluate_vqa(model, dataloader, device, tokenizer, beam_width=1):
             images = batch['image'].to(device)
             input_ids = batch['input_ids'].to(device)
             attention_mask = batch['attention_mask'].to(device)
+            labels = batch['label_closed']
             
-            # Sử dụng hàm generate chính thức
-            logits_open = model.generate(images, input_ids, attention_mask, beam_width=beam_width)
-            pred_ids = torch.argmax(logits_open, dim=-1)
-            preds_text = tokenizer.batch_decode(pred_ids, skip_special_tokens=True)
+            # [FIX] Gọi inference() để lấy CẢ HAI head outputs, truyền max_len từ config
+            logits_closed, pred_ids = model.inference(images, input_ids, attention_mask, beam_width=beam_width, max_len=max_len)
             
-            # Debug: In ra mẫu đầu tiên để kiểm tra
+            # Decode generative head + làm sạch subword artifacts
+            preds_text = [clean_vqa_output(t) for t in tokenizer.batch_decode(pred_ids, skip_special_tokens=True)]
+            
+            # [CRITICAL FIX] Với câu Đóng (Yes/No), dùng classifier head thay vì generator
+            closed_map = {0: "không", 1: "có"}
+            closed_preds_idx = torch.argmax(logits_closed, dim=-1)  # [B]
+            for i in range(len(preds_text)):
+                if labels[i].item() != -1:  # Câu hỏi đóng
+                    preds_text[i] = closed_map[closed_preds_idx[i].item()]
+            
+            # Debug: Hiển thị cả câu Đóng và câu Mở để kiểm tra đa dạng
             if len(all_preds) == 0:
                 print("\n--- DEBUG PREDICTIONS ---")
-                for i in range(min(3, len(preds_text))):
-                    print(f"Q: {batch['raw_questions'][i]}")
-                    print(f"Pred: '{preds_text[i]}'")
-                    print(f"GT  : '{batch['raw_answer'][i]}'")
+                shown_closed, shown_open = 0, 0
+                for i in range(len(preds_text)):
+                    is_closed = labels[i].item() != -1
+                    if (is_closed and shown_closed < 2) or (not is_closed and shown_open < 2):
+                        q_type = "CLOSED" if is_closed else "OPEN"
+                        print(f"[{q_type}] Q: {batch['raw_questions'][i]}")
+                        print(f"  Pred: '{preds_text[i]}'")
+                        print(f"  GT  : '{batch['raw_answer'][i]}'")
+                        if is_closed: shown_closed += 1
+                        else: shown_open += 1
+                    if shown_closed >= 2 and shown_open >= 2:
+                        break
                 print("--------------------------\n")
             
             all_preds.extend(preds_text)
-            all_refs.extend(batch.get('raw_answer_en', batch['raw_answer']))
+            # [CRITICAL FIX] Dùng đáp án Tiếng Việt để chấm điểm
+            all_refs.extend(batch['raw_answer'])
             is_closed = (batch['label_closed'] != -1).tolist()
             all_is_closed.extend(is_closed)
 

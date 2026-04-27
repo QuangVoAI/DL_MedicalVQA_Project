@@ -124,7 +124,8 @@ def train(args):
         
         scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=config['train']['epochs'])
         
-        # Khởi tạo Trainer với pad_token_id được sửa lỗi
+        # Khởi tạo Trainer với pad_token_id và beam_width từ config
+        beam_width = config['eval'].get('beam_width_a', 5)
         from src.engine.trainer import MedicalVQATrainer
         trainer = MedicalVQATrainer(
             model=model,
@@ -134,8 +135,10 @@ def train(args):
             scheduler=scheduler,
             device=device,
             config={**config, 'variant': args.variant},
-            pad_token_id=tokenizer.pad_token_id
+            pad_token_id=tokenizer.pad_token_id,
+            beam_width=beam_width
         )
+        print(f"[INFO] Beam Width cho Hướng A: {beam_width}")
 
         print(f"[INFO] Bắt đầu huấn luyện cấu hình {args.variant}...")
         trainer.train(config['train']['epochs'], tokenizer=tokenizer)

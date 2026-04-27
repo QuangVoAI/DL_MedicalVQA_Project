@@ -27,3 +27,20 @@ def majority_answer(answers: list[str]) -> str:
         return answers
     counts = Counter([normalize_answer(a) for a in answers])
     return counts.most_common(1)[0][0]
+
+def clean_vqa_output(text: str) -> str:
+    """
+    Làm sạch output từ PhoBERT tokenizer:
+    - Xóa subword prefix (@@, ##)
+    - Xóa khoảng trắng thừa
+    - Capitalize đầu câu
+    """
+    if not text:
+        return ""
+    # Xóa subword prefix của PhoBERT (@@) và BERT (##)
+    text = re.sub(r'@@\s?', '', text)
+    text = re.sub(r'##_?', '', text)
+    # Xóa ký tự thừa
+    text = re.sub(r'\s+', ' ', text).strip()
+    # Capitalize đầu câu
+    return text[:1].upper() + text[1:] if text else text

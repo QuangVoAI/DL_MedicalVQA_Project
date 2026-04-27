@@ -20,7 +20,7 @@ data:
   test_ratio: 0.10
   image_size: 224
   max_question_len: 64      # PhoBERT max tokens
-  max_answer_len: 10        # [FIX] Câu trả lời ≤ 10 từ theo đề bài (sửa từ 20)
+  max_answer_len: 32        # [OPTIMIZED] Tăng từ 10 lên 32 để hỗ trợ câu mô tả bệnh lý dài
 
 # ── Hướng A: Kiến trúc rời (Modular Architecture) ──
 model_a:

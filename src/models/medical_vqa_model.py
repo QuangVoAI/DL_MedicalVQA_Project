@@ -74,11 +74,25 @@ class MedicalVQAModelA(nn.Module):
 
     def generate(self, images, input_ids, attention_mask, beam_width=1, max_len=10):
         """
-        Giao diện chuyên biệt cho quá trình Inference.
+        Giao diện chuyên biệt cho quá trình Inference (chỉ trả token IDs cho open-ended).
         """
         v_feats = self.image_encoder(images)
         t_feats = self.text_encoder(input_ids, attention_mask)
         fused = self.fusion(v_feats, t_feats)
         
-        # Gọi trực tiếp hàm generate của decoder
         return self.decoder.generate(fused, beam_width=beam_width, max_len=max_len)
+
+    def inference(self, images, input_ids, attention_mask, beam_width=1, max_len=10):
+        """
+        [NEW] Trả về CẢ HAI dual-head outputs:
+        - logits_closed: [B, 2] — dùng cho câu Yes/No (classifier head)
+        - generated_ids: [B, max_len] — dùng cho câu mở (generative head)
+        """
+        v_feats = self.image_encoder(images)
+        t_feats = self.text_encoder(input_ids, attention_mask)
+        fused = self.fusion(v_feats, t_feats)
+        
+        logits_closed = self.decoder.classifier_head(fused.squeeze(1))  # [B, 2]
+        generated_ids = self.decoder.generate(fused, beam_width=beam_width, max_len=max_len)  # [B, max_len]
+        
+        return logits_closed, generated_ids

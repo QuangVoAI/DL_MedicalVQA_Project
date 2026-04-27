@@ -28,9 +28,7 @@ class MedicalVQADecoder(nn.Module):
         self.output_layer = nn.Linear(hidden_size, vocab_size)
 
     def generate(self, fused_features, beam_width=1, max_len=10):
-        """
-        Sinh câu trả lời sử dụng Greedy Search hoặc Beam Search.
-        """
+        """Sinh câu trả lời. Trả về token IDs [B, max_len]."""
         if beam_width <= 1:
             return self._greedy_search(fused_features, max_len)
         else:
@@ -42,68 +40,77 @@ class MedicalVQADecoder(nn.Module):
         return mask
 
     def _greedy_search(self, fused_features, max_len):
+        """
+        [FIX] Sửa lỗi LSTM bị feed lại toàn bộ chuỗi mỗi bước.
+        LSTM chỉ cần token cuối cùng + h_state mang ngữ cảnh.
+        Trả về token IDs [B, max_len] thay vì logits.
+        """
         batch_size = fused_features.size(0)
         device = fused_features.device
-        generated = torch.zeros((batch_size, 1), dtype=torch.long, device=device) # BOS
-        all_logits = []
+        generated = torch.zeros((batch_size, 1), dtype=torch.long, device=device)  # BOS
         h_state = None
 
         for _ in range(max_len):
-            curr_emb = self.embedding(generated)
             if self.decoder_type == "lstm":
+                # [FIX] Chỉ feed token cuối cùng, h_state giữ toàn bộ ngữ cảnh
+                curr_emb = self.embedding(generated[:, -1:])  # [B, 1, 768]
                 if h_state is None:
                     h0 = fused_features.transpose(0, 1).contiguous()
                     h_state = (h0, torch.zeros_like(h0))
                 outputs, h_state = self.generator(curr_emb, h_state)
             else:
+                # Transformer: cần toàn bộ chuỗi cho causal self-attention
+                curr_emb = self.embedding(generated)
                 tgt_mask = self._generate_square_subsequent_mask(generated.size(1)).to(device)
                 outputs = self.generator(curr_emb, fused_features, tgt_mask=tgt_mask)
             
             next_logits = self.output_layer(outputs[:, -1:, :])
-            all_logits.append(next_logits)
-            next_token = torch.argmax(next_logits, dim=-1)
+            next_token = torch.argmax(next_logits, dim=-1)  # [B, 1]
             generated = torch.cat([generated, next_token], dim=1)
             
-        return torch.cat(all_logits, dim=1)
+        return generated[:, 1:]  # Bỏ BOS, trả về token IDs [B, max_len]
 
-    def _beam_search(self, fused_features, beam_width, max_len, repetition_penalty=1.2):
+    def _beam_search(self, fused_features, beam_width, max_len, repetition_penalty=1.2, alpha=0.7):
         """
-        Triển khai Beam Search với cơ chế Repetition Penalty để chống lặp từ.
+        Beam Search với Length Normalization + Repetition Penalty.
+        alpha: length normalization factor (0=không normalize, 1=hoàn toàn)
+               0.6–0.8 khuyến khích sinh câu dài hơn.
+        Trả về token IDs [B, max_len].
         """
         batch_size = fused_features.size(0)
         device = fused_features.device
-        vocab_size = self.vocab_size
         
-        final_logits = []
+        all_results = []
 
         for b in range(batch_size):
-            feat = fused_features[b:b+1] # [1, 1, hidden]
-            # (sequence, score, h_state if lstm)
+            feat = fused_features[b:b+1]  # [1, 1, hidden]
             beams = [(torch.zeros((1, 1), dtype=torch.long, device=device), 0.0, None)]
             
-            for _ in range(max_len):
+            for step in range(max_len):
                 new_beams = []
                 for seq, score, h_state in beams:
-                    # Nếu token cuối là EOS (id=2), giữ nguyên và chuyển vào vòng sau
-                    if seq[0, -1].item() == 2:
+                    if seq[0, -1].item() == 2:  # EOS
                         new_beams.append((seq, score, h_state))
                         continue
-                        
-                    curr_emb = self.embedding(seq)
+                    
                     if self.decoder_type == "lstm":
+                        # [FIX] Chỉ feed token cuối cùng
+                        curr_emb = self.embedding(seq[:, -1:])
                         if h_state is None:
                             h0 = feat.transpose(0, 1).contiguous()
                             h_state = (h0, torch.zeros_like(h0))
                         outputs, next_h = self.generator(curr_emb, h_state)
                     else:
-                        outputs = self.generator(curr_emb, feat)
+                        curr_emb = self.embedding(seq)
+                        tgt_mask = self._generate_square_subsequent_mask(seq.size(1)).to(device)
+                        outputs = self.generator(curr_emb, feat, tgt_mask=tgt_mask)
                         next_h = None
                     
-                    logits = self.output_layer(outputs[:, -1:, :]).squeeze() # [Vocab]
+                    logits = self.output_layer(outputs[:, -1:, :]).squeeze()
                     
-                    # --- Repetition Penalty ---
+                    # Repetition Penalty
                     for token_id in set(seq[0].tolist()):
-                        if token_id in [0, 2]: continue # Bỏ qua BOS/EOS
+                        if token_id in [0, 2]: continue
                         if logits[token_id] < 0:
                             logits[token_id] *= repetition_penalty
                         else:
@@ -116,22 +123,30 @@ class MedicalVQADecoder(nn.Module):
                         new_seq = torch.cat([seq, topk_ids[i].view(1, 1)], dim=1)
                         new_beams.append((new_seq, score + topk_log_probs[i].item(), next_h))
                 
-                # Chọn Top-K beams
-                new_beams.sort(key=lambda x: x[1], reverse=True)
+                # [FIX] Length Normalization: chia score cho độ dài^alpha
+                # Tránh phạt câu dài vì cumulative log_prob tự nhiên giảm theo độ dài
+                def _normalized_score(beam):
+                    seq_len = beam[0].size(1) - 1  # trừ BOS
+                    return beam[1] / (max(seq_len, 1) ** alpha)
+                
+                new_beams.sort(key=_normalized_score, reverse=True)
                 beams = new_beams[:beam_width]
                 
-                # Nếu tất cả beams đều kết thúc bằng EOS, dừng sớm
-                if all(b[0][0, -1].item() == 2 for b in beams):
+                if all(bm[0][0, -1].item() == 2 for bm in beams):
                     break
             
-            # Lấy beam tốt nhất
-            best_seq = beams[0][0][:, 1:] # [1, max_len]
-            # Convert IDs back to "one-hot" style logits for compatibility
-            one_hot = torch.zeros((1, max_len, vocab_size), device=device)
-            one_hot.scatter_(2, best_seq.unsqueeze(-1), 1.0)
-            final_logits.append(one_hot)
+            # Chọn beam tốt nhất theo normalized score
+            beams.sort(key=_normalized_score, reverse=True)
+            best_seq = beams[0][0][:, 1:]  # Bỏ BOS
+            # Pad hoặc cắt về max_len
+            if best_seq.size(1) < max_len:
+                pad = torch.zeros((1, max_len - best_seq.size(1)), dtype=torch.long, device=device)
+                best_seq = torch.cat([best_seq, pad], dim=1)
+            else:
+                best_seq = best_seq[:, :max_len]
+            all_results.append(best_seq)
 
-        return torch.cat(final_logits, dim=0)
+        return torch.cat(all_results, dim=0)  # [B, max_len] token IDs
 
     def forward(self, fused_features, target_ids=None, beam_width=1):
         """
@@ -158,7 +173,7 @@ class MedicalVQADecoder(nn.Module):
                 
             logits_open = self.output_layer(outputs) # [B, SeqLen, Vocab]
         else:
-            # Chế độ Inference
+            # Chế độ Inference — trả về token IDs
             logits_open = self.generate(fused_features, beam_width=beam_width)
             
         return logits_closed, logits_open

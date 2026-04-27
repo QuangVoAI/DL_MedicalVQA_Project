@@ -15,7 +15,11 @@ class MedicalVQATrainer:
         self.config = config
         self.beam_width = beam_width
         
-        self.criterion_closed = nn.CrossEntropyLoss()
+        # [FIX] Tính class weights tự động từ phân phối Yes/No trong training data
+        closed_weights = self._compute_closed_weights(train_loader)
+        self.criterion_closed = nn.CrossEntropyLoss(weight=closed_weights.to(device))
+        print(f"[INFO] Closed-head class weights: không={closed_weights[0]:.3f}, có={closed_weights[1]:.3f}")
+        
         self.criterion_open = nn.CrossEntropyLoss(
             ignore_index=pad_token_id, 
             label_smoothing=config['train'].get('label_smoothing', 0.0)
@@ -24,6 +28,28 @@ class MedicalVQATrainer:
         # AMP (Automatic Mixed Precision)
         self.use_amp = config['train'].get('use_amp', False) and device.type == 'cuda'
         self.scaler = torch.cuda.amp.GradScaler(enabled=self.use_amp)
+
+    @staticmethod
+    def _compute_closed_weights(train_loader):
+        """Đếm phân phối Yes/No và tính inverse frequency weights."""
+        counts = {0: 0, 1: 0}  # 0=không, 1=có
+        for batch in train_loader:
+            labels = batch['label_closed']
+            for lbl in labels:
+                v = lbl.item()
+                if v in counts:
+                    counts[v] += 1
+        
+        total = counts[0] + counts[1]
+        if total == 0:
+            return torch.ones(2)
+        
+        # Inverse frequency: class ít mẫu → weight cao hơn
+        w0 = total / (2 * max(counts[0], 1))
+        w1 = total / (2 * max(counts[1], 1))
+        weights = torch.tensor([w0, w1], dtype=torch.float32)
+        print(f"[INFO] Closed question distribution: không={counts[0]}, có={counts[1]}")
+        return weights
 
     def train_epoch(self, epoch):
         self.model.train()
@@ -62,10 +88,22 @@ class MedicalVQATrainer:
                     loss_gen_closed = self.criterion_open(logits_open[mask_closed].reshape(-1, vocab_size), decoder_target[mask_closed].reshape(-1))
                     loss += loss_gen_closed * 0.1
                     
-                # 2. Câu hỏi Mở: Tăng trọng số cực lớn (2.0) ép LSTM/Transformer phải học từ vựng
+                # 2. Câu hỏi Mở: Tăng trọng số + Length Penalty + Coverage Penalty
                 if mask_open.any():
-                    loss_gen_open = self.criterion_open(logits_open[mask_open].reshape(-1, vocab_size), decoder_target[mask_open].reshape(-1))
-                    loss += loss_gen_open * 2.0
+                    open_logits = logits_open[mask_open]
+                    open_targets = decoder_target[mask_open]
+                    loss_gen_open = self.criterion_open(open_logits.reshape(-1, vocab_size), open_targets.reshape(-1))
+                    
+                    # Length penalty: phạt nếu model sinh quá ít token có nghĩa
+                    pred_lengths = (open_targets != self.criterion_open.ignore_index).float().sum(dim=-1).mean()
+                    length_penalty = torch.clamp(1.0 - pred_lengths / 15.0, min=0.0)
+                    
+                    # Coverage penalty: phạt nếu model lặp từ (tập trung quá vào 1 token)
+                    probs = torch.softmax(open_logits, dim=-1)  # [N, seq, vocab]
+                    coverage = probs.sum(dim=1)  # [N, vocab] — tổng xác suất mỗi token qua các bước
+                    coverage_loss = torch.clamp(coverage - 1.0, min=0.0).mean()  # phạt nếu > 1 lần
+                    
+                    loss += (loss_gen_open + 0.3 * length_penalty + 0.1 * coverage_loss) * 3.0
             
             # Backward với GradScaler
             self.scaler.scale(loss).backward()
@@ -79,8 +117,16 @@ class MedicalVQATrainer:
             self.scaler.update()
             
             total_loss += loss.item()
-            if wandb.run: wandb.log({"batch_loss": loss.item()})
-            pbar.set_postfix({"loss": loss.item(), "lr": self.optimizer.param_groups[0]['lr']})
+            # [FIX] Log LR cho từng param group — hiển thị decoder LR (group cuối) trên progress bar
+            decoder_lr = self.optimizer.param_groups[-1]['lr']
+            vision_lr = self.optimizer.param_groups[0]['lr']
+            if wandb.run: 
+                wandb.log({
+                    "batch_loss": loss.item(),
+                    "lr_vision": vision_lr,
+                    "lr_decoder": decoder_lr,
+                })
+            pbar.set_postfix({"loss": f"{loss.item():.3f}", "dec_lr": f"{decoder_lr:.1e}", "vis_lr": f"{vision_lr:.1e}"})
             
         # Step scheduler sau mỗi epoch
         if self.scheduler:
@@ -94,8 +140,9 @@ class MedicalVQATrainer:
         Thực hiện đánh giá trên tập Validation sau mỗi Epoch.
         """
         from src.engine.medical_eval import evaluate_vqa
-        print(f"\n🔍 Đang chạy Validation cho Epoch {epoch}...")
-        metrics = evaluate_vqa(self.model, self.val_loader, self.device, tokenizer, beam_width=self.beam_width)
+        max_ans_len = self.config.get('data', {}).get('max_answer_len', 32)
+        print(f"\n🔍 Đang chạy Validation cho Epoch {epoch} (max_ans_len={max_ans_len})...")
+        metrics = evaluate_vqa(self.model, self.val_loader, self.device, tokenizer, beam_width=self.beam_width, max_len=max_ans_len)
         
         # In các metrics quan trọng
         print(f"[METRICS] Accuracy: {metrics['accuracy']:.4f} | F1: {metrics['f1']:.4f} | BLEU-4: {metrics['bleu4']:.4f}")

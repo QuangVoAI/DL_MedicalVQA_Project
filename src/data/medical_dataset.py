@@ -78,8 +78,8 @@ class MedicalVQADataset(Dataset):
             chosen_ans = normalize_answer(item["chosen"])
             rejected_ans = normalize_answer(item["rejected"])
             
-            chosen_encoding = self.tokenizer(chosen_ans, padding="max_length", truncation=True, max_length=10, return_tensors="pt")
-            rejected_encoding = self.tokenizer(rejected_ans, padding="max_length", truncation=True, max_length=10, return_tensors="pt")
+            chosen_encoding = self.tokenizer(chosen_ans, padding="max_length", truncation=True, max_length=self.max_ans_len, return_tensors="pt")
+            rejected_encoding = self.tokenizer(rejected_ans, padding="max_length", truncation=True, max_length=self.max_ans_len, return_tensors="pt")
             
             return {
                 "image": image,
