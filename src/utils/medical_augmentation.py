@@ -58,9 +58,22 @@ class MedicalImageAugmentation:
         noisy = np.clip(image_np + noise, 0, 255).astype(np.uint8)
         return Image.fromarray(noisy)
     
-    def random_rotation(self, image, max_angle=10):
-        """Small random rotation (clinical context allows)."""
-        angle = np.random.uniform(-max_angle, max_angle)
+    def random_rotation(self, image, max_angle=3):
+        """
+        VERY LIMITED rotation to simulate positioning error only.
+        
+        ⚠️  MEDICAL SAFETY NOTE:
+        - Large rotations (>5°) create UNREALISTIC images
+        - Radiological findings change with orientation
+        - Limited to ±2-3° to model minor positioning variations
+        - NOT to simulate actual anatomical variations
+        
+        Use Case: Simulating patient positioning error during imaging
+        NOT Use Case: Creating augmented variants of same diagnosis
+        """
+        # CRITICAL: max_angle capped at 3° for medical safety
+        safe_angle = min(abs(max_angle), 3.0)
+        angle = np.random.uniform(-safe_angle, safe_angle)
         return image.rotate(angle, fillcolor=0, expand=False)
     
     def random_elastic_deformation(self, image_np, alpha=30, sigma=5, p=0.5):
@@ -114,7 +127,24 @@ class MedicalImageAugmentation:
     
     def get_augmentation_pipeline(self):
         """
-        Build augmentation pipeline with medical-specific constraints.
+        Build augmentation pipeline with MEDICALLY SAFE constraints.
+        
+        ⚠️  CRITICAL MEDICAL SAFETY NOTES:
+        
+        DISALLOWED Augmentations:
+        ❌ Large rotations (>5°) - Changes diagnosis interpretation
+        ❌ Flips - X-ray orientation must be preserved (PA vs AP)
+        ❌ Elastic deformations >2% - Can obscure pathology
+        
+        ALLOWED Augmentations:
+        ✅ Brightness/Contrast - Simulates imaging device variations
+        ✅ Noise - Simulates sensor noise in real devices
+        ✅ Very small rotations (±2-3°) - Positioning error only
+        ✅ Minimal shear - Slight patient positioning variation
+        
+        Rationale:
+        In radiology, image ORIENTATION and POSITION are clinically significant.
+        We augment to handle IMAGING VARIATIONS, not create fake diagnoses.
         
         Returns:
             torchvision.transforms.Compose instance
@@ -124,22 +154,27 @@ class MedicalImageAugmentation:
         # Resize to target size
         augmentations.append(transforms.Resize((self.size, self.size)))
         
-        # Medical-specific augmentations
+        # MEDICALLY SAFE augmentations only
         augmentations.extend([
-            # Small rotations (±10°)
-            transforms.RandomRotation(degrees=10, fill=0),
+            # SAFE: Very small rotations (±2-3° only to model positioning error)
+            # NOT for creating anatomically different images
+            transforms.RandomRotation(degrees=2, fill=0),
             
-            # Elastic deformations (anatomical variations)
-            transforms.RandomAffine(degrees=0, shear=5),
+            # SAFE: Minimal shear (±2°) for slight patient positioning variations
+            # Keep minimal to avoid changing anatomical structure
+            transforms.RandomAffine(degrees=0, shear=2, fill=0),
             
-            # Brightness/Contrast adjustments (imaging variations)
+            # SAFE: Brightness/Contrast adjustments (imaging equipment variation)
+            # Medical devices produce images with different intensities
             transforms.ColorJitter(brightness=0.1, contrast=0.15),
             
-            # Random horizontal flip (medical acceptable)
-            transforms.RandomHorizontalFlip(p=0.2),
+            # ❌ REMOVED: Random horizontal flip
+            # transforms.RandomHorizontalFlip(p=0.2)
+            # Reason: PA (posterior-anterior) vs AP (anterior-posterior) X-ray
+            # are different views with different diagnostic interpretations
             
-            # Slight zoom effect
-            transforms.RandomResizedCrop(self.size, scale=(0.95, 1.05)),
+            # SAFE: Slight zoom (±2-3% only for focus variation)
+            transforms.RandomResizedCrop(self.size, scale=(0.97, 1.03)),
         ])
         
         if self.aggressive_mode:
@@ -186,23 +221,24 @@ class ClinicalAwareAugmentation:
         self.medical_aug = MedicalImageAugmentation(size)
     
     def __call__(self, image):
-        """Apply augmentations in sequence."""
+        """Apply augmentations in sequence - CLINICALLY VALID ONLY."""
         # 1. CLAHE enhancement (preserve structure)
         if np.random.random() > 0.5:
             image = self.medical_aug.clahe_augmentation(image)
         
-        # 2. Geometric augmentations
-        if np.random.random() > 0.5:
-            image = self.medical_aug.random_rotation(image, max_angle=10)
+        # [REMOVED] 2. Geometric augmentations - NO ROTATION!
+        # Rotation changes radiological orientation which is diagnostically critical
+        # if np.random.random() > 0.5:
+        #     image = self.medical_aug.random_rotation(image, max_angle=10)  # ❌ INVALID
         
-        # 3. Brightness/Contrast
-        image = self.medical_aug.random_brightness_contrast(image)
+        # 2. Brightness/Contrast (minimal, realistic variations)
+        image = self.medical_aug.random_brightness_contrast(image, brightness=0.08, contrast=0.12)
         
-        # 4. Noise addition (low probability, small magnitude)
-        if np.random.random() > 0.8:
-            image = self.medical_aug.gaussian_noise(image, noise_level=0.01)
+        # 3. Noise addition (very low probability, small magnitude - simulator sensor noise)
+        if np.random.random() > 0.85:
+            image = self.medical_aug.gaussian_noise(image, noise_level=0.005)
         
-        # 5. Standard transforms
+        # 4. Standard transforms
         transform = transforms.Compose([
             transforms.Resize((self.size, self.size)),
             transforms.ToTensor(),
