@@ -1,7 +1,7 @@
 import re
 from collections import Counter
 
-from underthesea import text_normalize as uts_text_normalize
+from underthesea import text_normalize as uts_text_normalize, word_tokenize
 
 _MEDICAL_TERM_MAP = {
     "xray": "x-quang",
@@ -87,12 +87,23 @@ def normalize_answer(text: str) -> str:
     return text
 
 
+def _tokenize_vietnamese_words(text: str) -> list[str]:
+    normalized = normalize_answer(text)
+    if not normalized:
+        return []
+    try:
+        tokens = word_tokenize(normalized)
+        return [token.strip() for token in tokens if token and token.strip()]
+    except Exception:
+        return normalized.split()
+
+
 def count_words(text: str) -> int:
-    return len(normalize_answer(text).split())
+    return len(_tokenize_vietnamese_words(text))
 
 
 def _trim_to_max_words(text: str, max_words: int) -> str:
-    words = normalize_answer(text).split()
+    words = _tokenize_vietnamese_words(text)
     if len(words) <= max_words:
         return " ".join(words)
     return " ".join(words[:max_words])
