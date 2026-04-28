@@ -23,12 +23,26 @@ nltk>=3.8.0
 bert-score>=0.3.13
 rouge-score>=0.1.2
 
+# Data Analysis
+pandas>=1.5.0
+scikit-learn>=1.3.0
+
 # Progress & Visualization
 tqdm>=4.65.0
 matplotlib>=3.7.0
+seaborn>=0.12.0
 
 # Configuration
 pyyaml>=6.0
 
 # Statistical Testing (multi-seed significance)
 scipy>=1.10.0
+
+# Jupyter & Interactive
+jupyter>=1.0.0
+ipython>=8.12.0
+ipywidgets>=8.0.0
+
+# Misc Utilities
+requests>=2.31.0
+python-dotenv>=1.0.0
