@@ -63,6 +63,7 @@ dpo:
 
 # ── Training ──
 train:
+  a_epochs: 50                        # A1 + A2 (Direction A) model epochs
   epochs: 5                           # B2 fine-tuned model epochs
   dpo_epochs: 3                       # DPO training epochs
   batch_size: 32                      # [OPTIMIZED FOR 4090] Tăng từ 8 lên 32 để tận dụng 24GB VRAM

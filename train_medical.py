@@ -188,7 +188,11 @@ def train(args):
         
         # [CRITICAL FIX] Dùng Cosine Schedule với Warmup, step theo batch thay vì epoch
         from transformers import get_cosine_schedule_with_warmup
-        epochs = config['train']['epochs']
+        # Use a_epochs for Direction A models (A1, A2), otherwise use default epochs
+        if args.variant in ['A1', 'A2']:
+            epochs = config['train'].get('a_epochs', config['train']['epochs'])
+        else:
+            epochs = config['train']['epochs']
         warmup_epochs = config['train'].get('warmup_epochs', 5)
         total_steps = epochs * len(train_loader)
         warmup_steps = warmup_epochs * len(train_loader)
@@ -214,8 +218,8 @@ def train(args):
         )
         print(f"[INFO] Beam Width cho Hướng A: {beam_width}")
 
-        print(f"[INFO] Bắt đầu huấn luyện cấu hình {args.variant}...")
-        trainer.train(config['train']['epochs'], tokenizer=tokenizer)
+        print(f"[INFO] Bắt đầu huấn luyện cấu hình {args.variant} ({epochs} epochs)...")
+        trainer.train(epochs, tokenizer=tokenizer)
         return
 
     elif args.variant == 'DPO':
