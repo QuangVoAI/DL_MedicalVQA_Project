@@ -8,7 +8,7 @@ class PhoBERTEncoder(nn.Module):
     """
     def __init__(self, model_name="vinai/phobert-base", freeze_layers=10):
         super(PhoBERTEncoder, self).__init__()
-        self.bert = AutoModel.from_pretrained(model_name)
+        self.bert = AutoModel.from_pretrained(model_name, trust_remote_code=True)
         
         # Đóng băng các lớp Transformer đầu tiên nếu cần
         if freeze_layers > 0:
