@@ -16,6 +16,21 @@ from src.utils.visualization import MedicalImageTransform as MedicalTransform
 from src.data.medical_dataset import MedicalVQADataset
 from src.utils.text_utils import get_target_answer
 
+
+def build_training_arguments(training_arguments_cls, **kwargs):
+    """Create TrainingArguments across transformers versions."""
+    if "evaluation_strategy" in kwargs and "eval_strategy" not in kwargs:
+        alias_kwargs = dict(kwargs)
+        alias_kwargs["eval_strategy"] = alias_kwargs.pop("evaluation_strategy")
+        try:
+            return training_arguments_cls(**alias_kwargs)
+        except TypeError as exc:
+            if "eval_strategy" not in str(exc):
+                raise
+
+    return training_arguments_cls(**kwargs)
+
+
 def vqa_collate_fn(batch):
     """Hàm gom batch tùy chỉnh để xử lý ảnh PIL và raw text."""
     elem = batch[0]
@@ -222,7 +237,7 @@ def train(args):
             training_args_dict["beta"] = float(config.get('dpo', {}).get('beta', 0.1))
             training_args = DPOConfig(**training_args_dict)
         else:
-            training_args = TrainingArguments(**training_args_dict)
+            training_args = build_training_arguments(TrainingArguments, **training_args_dict)
             training_args.model_init_kwargs = None
         
         dpo_kwargs = {
@@ -278,7 +293,8 @@ def train(args):
             sft_train = make_sft_dataset(train_ds)
             sft_val = make_sft_dataset(val_ds)
         
-        training_args = TrainingArguments(
+        training_args = build_training_arguments(
+            TrainingArguments,
             output_dir="./checkpoints/B2",
             per_device_train_batch_size=config['train']['batch_size'],
             num_train_epochs=config['train'].get('epochs', 3),

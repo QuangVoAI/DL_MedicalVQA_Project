@@ -122,11 +122,12 @@ def evaluate_multimodal_vqa(model, dataloader, device, processor, beam_width=1, 
     with torch.no_grad():
         for batch in tqdm(dataloader, desc="Evaluating Multimodal"):
             raw_images = batch.get('raw_image')
-            # Lấy câu hỏi tiếng Việt để dịch (đảm bảo tính nhất quán cho bài toán Tiếng Việt)
             questions_vi = batch.get('raw_questions')
-            
-            # Bước 1: Dịch Vi -> En
-            questions_en = translator.translate_vi2en(questions_vi)
+            questions_en = batch.get('raw_questions_en')
+
+            # Ưu tiên câu hỏi tiếng Anh gốc từ dataset để tránh noise do dịch ngược.
+            if not questions_en or any(not str(q).strip() for q in questions_en):
+                questions_en = translator.translate_vi2en(questions_vi)
             
             # Bao bọc vào Prompt Template chuẩn của LLaVA-1.5 (PHẢI bằng tiếng Anh)
             prompts = [
