@@ -89,14 +89,19 @@ class MedicalVQATrainer:
         total_loss = 0
         pbar = tqdm(self.train_loader, desc=f"Epoch {epoch}")
         
-        for batch in pbar:
+        # [OPTIMIZATION] Gradient accumulation for larger effective batch size
+        accumulation_steps = self.config['train'].get('gradient_accumulation_steps', 2)
+        
+        for batch_idx, batch in enumerate(pbar):
             images = batch['image'].to(self.device)
             input_ids = batch['input_ids'].to(self.device)
             attention_mask = batch['attention_mask'].to(self.device)
             label_closed = batch['label_closed'].to(self.device)
             target_ids = batch['target_ids'].to(self.device)
             
-            self.optimizer.zero_grad()
+            # Zero gradients only at the beginning or after optimizer step
+            if batch_idx % accumulation_steps == 0:
+                self.optimizer.zero_grad()
             
             # Sử dụng AMP Autocast
             with torch.cuda.amp.autocast(enabled=self.use_amp):
@@ -137,23 +142,28 @@ class MedicalVQATrainer:
                     coverage_loss = torch.clamp(coverage - 1.0, min=0.0).mean()  # phạt nếu > 1 lần
                     
                     loss += (loss_gen_open + 0.3 * length_penalty + 0.1 * coverage_loss) * 3.0
+                
+                # [OPTIMIZATION] Normalize loss by accumulation steps for proper gradient scaling
+                loss = loss / accumulation_steps
             
             # Backward với GradScaler
             self.scaler.scale(loss).backward()
             
-            # Gradient Clipping
-            if self.config['train'].get('grad_clip'):
-                self.scaler.unscale_(self.optimizer)
-                nn.utils.clip_grad_norm_(self.model.parameters(), self.config['train']['grad_clip'])
-            
-            self.scaler.step(self.optimizer)
-            self.scaler.update()
-            
-            # [CRITICAL FIX] Step scheduler sau mỗi batch thay vì epoch để warmup mượt hơn
-            if self.scheduler:
-                self.scheduler.step()
+            # [OPTIMIZATION] Update weights only after accumulating gradients
+            if (batch_idx + 1) % accumulation_steps == 0:
+                # Gradient Clipping
+                if self.config['train'].get('grad_clip'):
+                    self.scaler.unscale_(self.optimizer)
+                    nn.utils.clip_grad_norm_(self.model.parameters(), self.config['train']['grad_clip'])
                 
-            total_loss += loss.item()
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+                
+                # [CRITICAL FIX] Step scheduler sau mỗi batch thay vì epoch để warmup mượt hơn
+                if self.scheduler:
+                    self.scheduler.step()
+                
+            total_loss += loss.item() * accumulation_steps
             # [FIX] Log LR cho từng param group — hiển thị decoder LR (group cuối) trên progress bar
             decoder_lr = self.optimizer.param_groups[-1]['lr']
             vision_lr = self.optimizer.param_groups[0]['lr']

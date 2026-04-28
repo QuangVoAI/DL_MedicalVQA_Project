@@ -78,6 +78,9 @@ train:
   eta_min: 1.0e-6
   eval_every: 2
   use_amp: true                       # Luôn bật Mixed Precision cho T4
+  gradient_accumulation_steps: 2      # [OPTIMIZATION] Effective batch = 32*2 = 64
+  use_discriminative_lr: true         # [OPTIMIZATION] Different LR for different layers
+  use_dynamic_class_weights: true     # [OPTIMIZATION] Compute class weights from data
   num_workers: 16                     # [OPTIMIZED FOR VAST.AI] Tăng từ 2 lên 16 nhờ CPU 36 cores
   pin_memory: true                    # Tăng tốc truyền dữ liệu lên GPU
 
