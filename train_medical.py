@@ -7,6 +7,9 @@ from transformers import AutoTokenizer
 import yaml
 import argparse
 import os
+import csv
+import json
+from datetime import datetime
 
 from datasets import load_dataset
 # Import các thành phần từ thư mục src
@@ -43,6 +46,43 @@ def vqa_collate_fn(batch):
             collated[key] = [item[key] for item in batch]
     return collated
 
+
+def flatten_dict(data, parent_key="", sep="."):
+    items = {}
+    for key, value in data.items():
+        new_key = f"{parent_key}{sep}{key}" if parent_key else str(key)
+        if isinstance(value, dict):
+            items.update(flatten_dict(value, new_key, sep=sep))
+        elif isinstance(value, (list, tuple)):
+            continue
+        else:
+            items[new_key] = value
+    return items
+
+
+def create_history_dir(base_log_dir, variant):
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    history_dir = os.path.join(base_log_dir, "history", variant, timestamp)
+    os.makedirs(history_dir, exist_ok=True)
+    return history_dir
+
+
+def save_history_records(history_dir, records):
+    os.makedirs(history_dir, exist_ok=True)
+    json_path = os.path.join(history_dir, "history.json")
+    csv_path = os.path.join(history_dir, "history.csv")
+
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(records, f, ensure_ascii=False, indent=2)
+
+    flat_rows = [flatten_dict(record) for record in records]
+    if flat_rows:
+        fieldnames = sorted({key for row in flat_rows for key in row.keys()})
+        with open(csv_path, "w", encoding="utf-8", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(flat_rows)
+
 def train(args):
     # 1. Load Cấu hình
     with open(args.config, 'r', encoding='utf-8') as f:
@@ -59,6 +99,8 @@ def train(args):
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[INFO] Thiết bị sử dụng: {device}")
+    history_dir = create_history_dir(config.get("log_dir", "logs/medical_vqa"), args.variant)
+    print(f"[INFO] Lưu training history tại: {history_dir}")
 
     # 2. Tokenizer & Dataset
     tokenizer = AutoTokenizer.from_pretrained(config['model_a']['phobert_model'])
@@ -166,7 +208,7 @@ def train(args):
             optimizer=optimizer,
             scheduler=scheduler,
             device=device,
-            config={**config, 'variant': args.variant},
+            config={**config, 'variant': args.variant, 'history_dir': history_dir},
             pad_token_id=tokenizer.pad_token_id,
             beam_width=beam_width
         )
@@ -259,6 +301,7 @@ def train(args):
         trainer.train()
         os.makedirs("checkpoints", exist_ok=True)
         torch.save(model.state_dict(), f"checkpoints/medical_vqa_dpo.pth")
+        save_history_records(history_dir, trainer.state.log_history)
         print("[SUCCESS] Đã lưu checkpoint DPO.")
         return
 
@@ -326,6 +369,7 @@ def train(args):
                 trainer = SFTTrainer(**trainer_kwargs, tokenizer=processor.tokenizer)
             
         trainer.train()
+        save_history_records(history_dir, trainer.state.log_history)
         return
 
     elif args.variant == 'B1':
@@ -353,6 +397,11 @@ def train(args):
         print(f"BLEU-4: {metrics.get('bleu4', 0):.4f}")
         print(f"BERTScore: {metrics.get('bert_score', 0):.4f}")
         print(f"Semantic Score: {metrics.get('semantic', 0):.4f}")
+        save_history_records(history_dir, [{
+            "variant": "B1",
+            "beam_width": beam_width,
+            "metrics": metrics,
+        }])
         return
 
 if __name__ == "__main__":

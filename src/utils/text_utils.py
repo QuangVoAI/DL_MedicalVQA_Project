@@ -178,5 +178,6 @@ def clean_vqa_output(text: str) -> str:
         return ""
     text = re.sub(r"@@\s?", "", text)
     text = re.sub(r"##_?", "", text)
+    text = re.sub(r"\b(answer|response|assistant|trả lời)\b\s*:?\s*$", "", text, flags=re.IGNORECASE)
     text = re.sub(r"\s+", " ", text).strip()
     return text

@@ -3,6 +3,8 @@ import torch
 import torch.nn as nn
 from tqdm import tqdm
 import os
+import csv
+import json
 
 class MedicalVQATrainer:
     def __init__(self, model, train_loader, val_loader, optimizer, device, config, scheduler=None, pad_token_id=0, beam_width=1):
@@ -29,6 +31,36 @@ class MedicalVQATrainer:
         # AMP (Automatic Mixed Precision)
         self.use_amp = config['train'].get('use_amp', False) and device.type == 'cuda'
         self.scaler = torch.cuda.amp.GradScaler(enabled=self.use_amp)
+        self.history = []
+
+    @staticmethod
+    def _flatten_dict(data, parent_key="", sep="."):
+        items = {}
+        for key, value in data.items():
+            new_key = f"{parent_key}{sep}{key}" if parent_key else str(key)
+            if isinstance(value, dict):
+                items.update(MedicalVQATrainer._flatten_dict(value, new_key, sep=sep))
+            elif isinstance(value, (list, tuple)):
+                continue
+            else:
+                items[new_key] = value
+        return items
+
+    def save_history(self, output_dir):
+        os.makedirs(output_dir, exist_ok=True)
+        json_path = os.path.join(output_dir, "history.json")
+        csv_path = os.path.join(output_dir, "history.csv")
+
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(self.history, f, ensure_ascii=False, indent=2)
+
+        flat_rows = [self._flatten_dict(row) for row in self.history]
+        if flat_rows:
+            fieldnames = sorted({key for row in flat_rows for key in row.keys()})
+            with open(csv_path, "w", encoding="utf-8", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerows(flat_rows)
 
     @staticmethod
     def _compute_closed_weights(train_loader):
@@ -174,6 +206,7 @@ class MedicalVQATrainer:
         counter = 0
         ckpt_dir = "checkpoints"
         os.makedirs(ckpt_dir, exist_ok=True)
+        history_dir = self.config.get("history_dir")
         
         print(f"[INFO] Bắt đầu huấn luyện trong {epochs} epochs...")
         for epoch in range(1, epochs + 1):
@@ -181,9 +214,21 @@ class MedicalVQATrainer:
             metrics = self.val_epoch(tokenizer, epoch=epoch)
             
             val_acc = metrics.get('accuracy', 0)
+            is_best = val_acc > best_val_acc
+            epoch_record = {
+                "epoch": epoch,
+                "train_loss": float(train_loss),
+                "val_accuracy": float(metrics.get("accuracy", 0.0)),
+                "val_f1": float(metrics.get("f1", 0.0)),
+                "val_bleu4": float(metrics.get("bleu4", 0.0)),
+                "val_bert_score": float(metrics.get("bert_score", 0.0)),
+                "best_so_far": bool(is_best),
+                "metrics": metrics,
+            }
+            self.history.append(epoch_record)
             
             # Kiểm tra và Lưu Best Checkpoint
-            if val_acc > best_val_acc:
+            if is_best:
                 best_val_acc = val_acc
                 counter = 0
                 variant = self.config.get('variant', 'A')
@@ -205,8 +250,13 @@ class MedicalVQATrainer:
                 print(f"🌟 Best model saved with Accuracy: {val_acc:.4f}")
             else:
                 counter += 1
-                if counter >= patience:
-                    print(f"🛑 Early stopping tại epoch {epoch}!")
-                    break
+            if history_dir:
+                self.save_history(history_dir)
+            if counter >= patience:
+                print(f"🛑 Early stopping tại epoch {epoch}!")
+                break
                     
         print("[INFO] Huấn luyện hoàn tất.")
+        if history_dir:
+            self.save_history(history_dir)
+        return self.history

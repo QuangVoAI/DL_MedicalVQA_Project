@@ -1,10 +1,94 @@
 import torch
 from tqdm import tqdm
 from src.utils.metrics import batch_metrics
-from src.utils.text_utils import is_medical_term_compliant, postprocess_answer
+from src.utils.text_utils import is_medical_term_compliant, normalize_answer, postprocess_answer
 
 def normalize_for_metric(text: str) -> str:
     return text.strip().lower()
+
+
+def _normalize_closed_answer(question_vi: str, question_en: str, pred_vi: str, pred_en: str = "") -> str:
+    """Map descriptive yes/no-style outputs to closed-form labels."""
+    question_vi_norm = normalize_answer(question_vi)
+    question_en_norm = normalize_answer(question_en)
+    pred_vi_norm = normalize_answer(pred_vi)
+    pred_en_norm = normalize_answer(pred_en)
+    combined = " ".join(part for part in [pred_vi_norm, pred_en_norm] if part).strip()
+
+    is_normality_question = any(
+        pattern in " ".join([question_vi_norm, question_en_norm])
+        for pattern in ["bình thường", "normal", "abnormal", "bat thuong"]
+    )
+
+    if is_normality_question:
+        positive_patterns = [
+            "bình thường",
+            "normal",
+            "no significant abnormalities",
+            "no abnormality",
+            "unremarkable",
+            "appears to be normal",
+            "without significant abnormalities",
+            "không phát hiện bất thường",
+        ]
+        negative_patterns = [
+            "bất thường",
+            "abnormal",
+            "abnormality detected",
+            "fracture",
+            "lesion",
+            "mass",
+            "effusion",
+            "pneumothorax",
+        ]
+    else:
+        positive_patterns = [
+            "có",
+            "yes",
+            "present",
+            "detected",
+            "positive",
+        ]
+        negative_patterns = [
+            "không",
+            "no",
+            "absent",
+            "not seen",
+            "negative",
+            "none",
+        ]
+
+    if any(pattern in combined for pattern in positive_patterns):
+        return "có"
+    if any(pattern in combined for pattern in negative_patterns):
+        return "không"
+
+    fallback_positive_patterns = [
+        "bình thường",
+        "normal",
+        "no significant abnormalities",
+        "no abnormality",
+        "unremarkable",
+        "appears to be normal",
+        "without significant abnormalities",
+        "không phát hiện bất thường",
+    ]
+    fallback_negative_patterns = [
+        "bất thường",
+        "abnormal",
+        "abnormality detected",
+        "fracture",
+        "lesion",
+        "mass",
+        "effusion",
+        "pneumothorax",
+    ]
+
+    if any(pattern in combined for pattern in fallback_positive_patterns):
+        return "có"
+    if any(pattern in combined for pattern in fallback_negative_patterns):
+        return "không"
+    return pred_vi_norm or pred_en_norm
 
 
 def _compute_format_stats(preds: list[str], max_words: int) -> dict[str, float]:
@@ -156,6 +240,10 @@ def evaluate_multimodal_vqa(model, dataloader, device, processor, beam_width=1, 
             
             # Bước 2: Dịch En -> Vi để có kết quả Tiếng Việt như user yêu cầu
             preds_vi = [postprocess_answer(pred, max_words=max_words) for pred in translator.translate_en2vi(preds_en)]
+            labels = batch['label_closed']
+            for i in range(len(preds_vi)):
+                if labels[i].item() != -1:
+                    preds_vi[i] = _normalize_closed_answer(questions_vi[i], questions_en[i], preds_vi[i], preds_en[i])
             
             # Debug mẫu đầu tiên
             if len(all_preds) == 0:
