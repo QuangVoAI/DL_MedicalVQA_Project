@@ -392,11 +392,11 @@ def train(args):
         )
         
         print(f"\n[RESULT B1]")
-        print(f"Accuracy: {metrics.get('accuracy', metrics.get('vqa_accuracy', 0)):.4f}")
-        print(f"F1: {metrics.get('f1', 0):.4f}")
-        print(f"BLEU-4: {metrics.get('bleu4', 0):.4f}")
-        print(f"BERTScore: {metrics.get('bert_score', 0):.4f}")
-        print(f"Semantic Score: {metrics.get('semantic', 0):.4f}")
+        print(f"Accuracy: {metrics.get('accuracy_normalized', metrics.get('accuracy', metrics.get('vqa_accuracy', 0))):.4f}")
+        print(f"F1: {metrics.get('f1_normalized', metrics.get('f1', 0)):.4f}")
+        print(f"BLEU-4: {metrics.get('bleu4_normalized', metrics.get('bleu4', 0)):.4f}")
+        print(f"BERTScore: {metrics.get('bert_score_raw', metrics.get('bert_score', 0)):.4f}")
+        print(f"Semantic Score: {metrics.get('semantic_raw', metrics.get('semantic', 0)):.4f}")
         save_history_records(history_dir, [{
             "variant": "B1",
             "beam_width": beam_width,

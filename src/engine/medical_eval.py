@@ -1,6 +1,6 @@
 import torch
 from tqdm import tqdm
-from src.utils.metrics import batch_metrics
+from src.utils.metrics import batch_metrics, compute_bertscore, compute_semantic_score
 from src.utils.text_utils import is_medical_term_compliant, normalize_answer, postprocess_answer
 
 def normalize_for_metric(text: str) -> str:
@@ -105,6 +105,33 @@ def _compute_format_stats(preds: list[str], max_words: int) -> dict[str, float]:
         "avg_answer_length": sum(word_counts) / len(word_counts),
     }
 
+
+def _attach_metric_views(metrics: dict[str, float]) -> dict[str, float]:
+    """Add explicit metric names while preserving backward-compatible aliases."""
+    if "accuracy" in metrics:
+        metrics["accuracy_normalized"] = metrics["accuracy"]
+    if "em" in metrics:
+        metrics["em_normalized"] = metrics["em"]
+    if "f1" in metrics:
+        metrics["f1_normalized"] = metrics["f1"]
+    if "bleu1" in metrics:
+        metrics["bleu1_normalized"] = metrics["bleu1"]
+    if "bleu2" in metrics:
+        metrics["bleu2_normalized"] = metrics["bleu2"]
+    if "bleu3" in metrics:
+        metrics["bleu3_normalized"] = metrics["bleu3"]
+    if "bleu4" in metrics:
+        metrics["bleu4_normalized"] = metrics["bleu4"]
+    if "rouge_l" in metrics:
+        metrics["rouge_l_normalized"] = metrics["rouge_l"]
+    if "meteor" in metrics:
+        metrics["meteor_normalized"] = metrics["meteor"]
+    if "bert_score" in metrics:
+        metrics["bert_score_raw"] = metrics["bert_score"]
+    if "semantic" in metrics:
+        metrics["semantic_raw"] = metrics["semantic"]
+    return metrics
+
 class MedicalVQAEvaluator:
     """
     Hệ thống đánh giá hợp nhất cho cả Hướng A và Hướng B.
@@ -126,6 +153,7 @@ class MedicalVQAEvaluator:
 def evaluate_vqa(model, dataloader, device, tokenizer, beam_width=1, max_len=32, max_words=10):
     model.eval()
     all_preds = []
+    all_preds_raw = []
     all_refs = []
     all_is_closed = []
     
@@ -140,10 +168,11 @@ def evaluate_vqa(model, dataloader, device, tokenizer, beam_width=1, max_len=32,
             logits_closed, pred_ids = model.inference(images, input_ids, attention_mask, beam_width=beam_width, max_len=max_len)
             
             # Decode generative head + làm sạch subword artifacts
-            preds_text = [
+            preds_text_raw = [
                 postprocess_answer(t, max_words=max_words)
                 for t in tokenizer.batch_decode(pred_ids, skip_special_tokens=True)
             ]
+            preds_text = list(preds_text_raw)
             
             # [CRITICAL FIX] Với câu Đóng (Yes/No), dùng classifier head thay vì generator
             closed_map = {0: "không", 1: "có"}
@@ -162,7 +191,8 @@ def evaluate_vqa(model, dataloader, device, tokenizer, beam_width=1, max_len=32,
                     if (is_closed and shown_closed < 2) or (not is_closed and shown_open < 2):
                         q_type = "CLOSED" if is_closed else "OPEN"
                         print(f"[{q_type}] Q: {batch['raw_questions'][i]}")
-                        print(f"  Pred: '{preds_text[i]}'")
+                        print(f"  Pred raw: '{preds_text_raw[i]}'")
+                        print(f"  Pred normalized: '{preds_text[i]}'")
                         print(f"  GT  : '{batch['raw_answer'][i]}'")
                         if is_closed: shown_closed += 1
                         else: shown_open += 1
@@ -171,31 +201,45 @@ def evaluate_vqa(model, dataloader, device, tokenizer, beam_width=1, max_len=32,
                 print("--------------------------\n")
             
             all_preds.extend([normalize_for_metric(p) for p in preds_text])
+            all_preds_raw.extend([normalize_for_metric(p) for p in preds_text_raw])
             # [CRITICAL FIX] Dùng đáp án Tiếng Việt để chấm điểm
             all_refs.extend([normalize_for_metric(postprocess_answer(r, max_words=max_words)) for r in batch['raw_answer']])
             is_closed = (batch['label_closed'] != -1).tolist()
             all_is_closed.extend(is_closed)
 
     metrics = batch_metrics(all_preds, all_refs)
+    metrics["semantic"] = compute_semantic_score(all_preds_raw, all_refs)
+    metrics["bert_score"] = compute_bertscore(all_preds_raw, all_refs)
+    metrics = _attach_metric_views(metrics)
     metrics.update(_compute_format_stats(all_preds, max_words=max_words))
     metrics['predictions'] = all_preds
+    metrics['predictions_raw'] = all_preds_raw
     metrics['ground_truths'] = all_refs
     
     closed_preds = [p for p, c in zip(all_preds, all_is_closed) if c]
     closed_refs = [r for r, c in zip(all_refs, all_is_closed) if c]
+    closed_preds_raw = [p for p, c in zip(all_preds_raw, all_is_closed) if c]
     if closed_preds:
         metrics['closed'] = batch_metrics(closed_preds, closed_refs)
+        metrics['closed']["semantic"] = compute_semantic_score(closed_preds_raw, closed_refs)
+        metrics['closed']["bert_score"] = compute_bertscore(closed_preds_raw, closed_refs)
+        metrics['closed'] = _attach_metric_views(metrics['closed'])
         metrics['closed'].update(_compute_format_stats(closed_preds, max_words=max_words))
     open_preds = [p for p, c in zip(all_preds, all_is_closed) if not c]
     open_refs = [r for r, c in zip(all_refs, all_is_closed) if not c]
+    open_preds_raw = [p for p, c in zip(all_preds_raw, all_is_closed) if not c]
     if open_preds:
         metrics['open'] = batch_metrics(open_preds, open_refs)
+        metrics['open']["semantic"] = compute_semantic_score(open_preds_raw, open_refs)
+        metrics['open']["bert_score"] = compute_bertscore(open_preds_raw, open_refs)
+        metrics['open'] = _attach_metric_views(metrics['open'])
         metrics['open'].update(_compute_format_stats(open_preds, max_words=max_words))
     return metrics
 
 def evaluate_multimodal_vqa(model, dataloader, device, processor, beam_width=1, max_words=10):
     model.eval()
     all_preds = []
+    all_preds_raw = []
     all_refs = []
     all_is_closed = []
     
@@ -239,7 +283,8 @@ def evaluate_multimodal_vqa(model, dataloader, device, processor, beam_width=1, 
             preds_en = processor.batch_decode(new_tokens, skip_special_tokens=True)
             
             # Bước 2: Dịch En -> Vi để có kết quả Tiếng Việt như user yêu cầu
-            preds_vi = [postprocess_answer(pred, max_words=max_words) for pred in translator.translate_en2vi(preds_en)]
+            preds_vi_raw = [postprocess_answer(pred, max_words=max_words) for pred in translator.translate_en2vi(preds_en)]
+            preds_vi = list(preds_vi_raw)
             labels = batch['label_closed']
             for i in range(len(preds_vi)):
                 if labels[i].item() != -1:
@@ -251,28 +296,42 @@ def evaluate_multimodal_vqa(model, dataloader, device, processor, beam_width=1, 
                 print(f"Q (Vi): {questions_vi[0]}")
                 print(f"Q (En): {questions_en[0]}")
                 print(f"Pred (En): {preds_en[0]}")
-                print(f"Pred (Vi): {preds_vi[0]}")
+                print(f"Pred (Vi raw): {preds_vi_raw[0]}")
+                print(f"Pred (Vi normalized): {preds_vi[0]}")
                 print(f"GT (Vi): {batch['raw_answer'][0]}")
                 print("------------------------------------------\n")
 
             all_preds.extend([normalize_for_metric(p) for p in preds_vi])
+            all_preds_raw.extend([normalize_for_metric(p) for p in preds_vi_raw])
             all_refs.extend([normalize_for_metric(postprocess_answer(r, max_words=max_words)) for r in batch['raw_answer']])
             is_closed = (batch['label_closed'] != -1).tolist()
             all_is_closed.extend(is_closed)
 
     metrics = batch_metrics(all_preds, all_refs)
+    metrics["semantic"] = compute_semantic_score(all_preds_raw, all_refs)
+    metrics["bert_score"] = compute_bertscore(all_preds_raw, all_refs)
+    metrics = _attach_metric_views(metrics)
     metrics.update(_compute_format_stats(all_preds, max_words=max_words))
     metrics['predictions'] = all_preds
+    metrics['predictions_raw'] = all_preds_raw
     metrics['ground_truths'] = all_refs
     
     closed_preds = [p for p, c in zip(all_preds, all_is_closed) if c]
     closed_refs = [r for r, c in zip(all_refs, all_is_closed) if c]
+    closed_preds_raw = [p for p, c in zip(all_preds_raw, all_is_closed) if c]
     if closed_preds:
         metrics['closed'] = batch_metrics(closed_preds, closed_refs)
+        metrics['closed']["semantic"] = compute_semantic_score(closed_preds_raw, closed_refs)
+        metrics['closed']["bert_score"] = compute_bertscore(closed_preds_raw, closed_refs)
+        metrics['closed'] = _attach_metric_views(metrics['closed'])
         metrics['closed'].update(_compute_format_stats(closed_preds, max_words=max_words))
     open_preds = [p for p, c in zip(all_preds, all_is_closed) if not c]
     open_refs = [r for r, c in zip(all_refs, all_is_closed) if not c]
+    open_preds_raw = [p for p, c in zip(all_preds_raw, all_is_closed) if not c]
     if open_preds:
         metrics['open'] = batch_metrics(open_preds, open_refs)
+        metrics['open']["semantic"] = compute_semantic_score(open_preds_raw, open_refs)
+        metrics['open']["bert_score"] = compute_bertscore(open_preds_raw, open_refs)
+        metrics['open'] = _attach_metric_views(metrics['open'])
         metrics['open'].update(_compute_format_stats(open_preds, max_words=max_words))
     return metrics

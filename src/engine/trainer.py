@@ -187,15 +187,24 @@ class MedicalVQATrainer:
         )
         
         # In các metrics quan trọng
-        print(f"[METRICS] Accuracy: {metrics['accuracy']:.4f} | F1: {metrics['f1']:.4f} | BLEU-4: {metrics['bleu4']:.4f}")
+        print(
+            f"[METRICS] Accuracy: {metrics.get('accuracy_normalized', metrics['accuracy']):.4f} | "
+            f"F1: {metrics.get('f1_normalized', metrics['f1']):.4f} | "
+            f"BLEU-4: {metrics.get('bleu4_normalized', metrics['bleu4']):.4f}"
+        )
         
         if wandb.run:
             wandb.log({
                 "epoch": epoch,
                 "val_accuracy": metrics["accuracy"],
+                "val_accuracy_normalized": metrics.get("accuracy_normalized", metrics["accuracy"]),
                 "val_f1": metrics["f1"],
+                "val_f1_normalized": metrics.get("f1_normalized", metrics["f1"]),
                 "val_bleu4": metrics["bleu4"],
-                "val_bert_score": metrics.get("bert_score", 0)
+                "val_bleu4_normalized": metrics.get("bleu4_normalized", metrics["bleu4"]),
+                "val_bert_score": metrics.get("bert_score", 0),
+                "val_bert_score_raw": metrics.get("bert_score_raw", metrics.get("bert_score", 0)),
+                "val_semantic_raw": metrics.get("semantic_raw", metrics.get("semantic", 0)),
             })
 
         return metrics
@@ -213,15 +222,20 @@ class MedicalVQATrainer:
             train_loss = self.train_epoch(epoch)
             metrics = self.val_epoch(tokenizer, epoch=epoch)
             
-            val_acc = metrics.get('accuracy', 0)
+            val_acc = metrics.get('accuracy_normalized', metrics.get('accuracy', 0))
             is_best = val_acc > best_val_acc
             epoch_record = {
                 "epoch": epoch,
                 "train_loss": float(train_loss),
                 "val_accuracy": float(metrics.get("accuracy", 0.0)),
+                "val_accuracy_normalized": float(metrics.get("accuracy_normalized", metrics.get("accuracy", 0.0))),
                 "val_f1": float(metrics.get("f1", 0.0)),
+                "val_f1_normalized": float(metrics.get("f1_normalized", metrics.get("f1", 0.0))),
                 "val_bleu4": float(metrics.get("bleu4", 0.0)),
+                "val_bleu4_normalized": float(metrics.get("bleu4_normalized", metrics.get("bleu4", 0.0))),
                 "val_bert_score": float(metrics.get("bert_score", 0.0)),
+                "val_bert_score_raw": float(metrics.get("bert_score_raw", metrics.get("bert_score", 0.0))),
+                "val_semantic_raw": float(metrics.get("semantic_raw", metrics.get("semantic", 0.0))),
                 "best_so_far": bool(is_best),
                 "metrics": metrics,
             }

@@ -90,6 +90,19 @@ DL_MedicalVQA_Project/
 1. **Test Set 1 (In-Distribution):** Trích xuất ~60 ảnh (Image-disjoint) từ SLAKE + VQA-RAD để đảm bảo bảo toàn điểm số an toàn (Baseline).
 2. **Test Set 2 (Out-of-Distribution):** Trích xuất ~50 ảnh thủ công từ **VQA-MED** (chỉ lấy X-Quang, MRI, CT). Dùng để kiểm tra khả năng chống chịu sự dịch chuyển miền dữ liệu (Domain Shift), được đánh giá tự động bằng **LLM-as-a-judge (Qwen-Plus API)**.
 
+## 📏 Phương pháp đánh giá
+Trong Medical VQA, đặc biệt với **Hướng B (LLaVA-Med)**, mô hình thường sinh ra câu trả lời tự do dưới dạng câu mô tả đầy đủ thay vì chỉ một nhãn ngắn như `có` hoặc `không`. Nếu dùng trực tiếp các câu mô tả này để tính exact-match hoặc accuracy, nhiều trường hợp đúng về mặt ngữ nghĩa vẫn sẽ bị tính là sai do không trùng bề mặt với ground truth ngắn.
+
+Vì vậy, hệ thống đánh giá được tách thành hai lớp:
+- **Raw prediction:** câu trả lời gốc sau giải mã và hậu xử lý tối thiểu. Bản này được dùng cho các chỉ số ngữ nghĩa như **BERTScore** và **Semantic Score**, vì các chỉ số này cần giữ nguyên nội dung diễn đạt của mô hình.
+- **Normalized prediction:** phiên bản chuẩn hóa của dự đoán, trong đó các câu trả lời mô tả cho câu hỏi đóng sẽ được ánh xạ về nhãn chuẩn như `có/không`. Bản này được dùng cho các chỉ số yêu cầu so khớp trực tiếp như **Accuracy, Exact Match, F1, BLEU**.
+
+Ví dụ, với câu hỏi `Hình ảnh này có bình thường không?`, mô hình có thể sinh ra câu tiếng Anh như `The image appears to be normal, with no significant abnormalities detected`. Sau khi dịch và chuẩn hóa:
+- **Raw prediction (Vi):** giữ câu mô tả đầy đủ để phục vụ semantic metrics.
+- **Normalized prediction (Vi):** được ánh xạ về `có` để chấm Accuracy theo schema nhãn của dataset.
+
+Thiết kế này giúp kết quả công bằng hơn ở cả hai góc nhìn: khả năng tuân thủ định dạng đáp án của bài toán và khả năng diễn đạt đúng ý nghĩa y khoa của mô hình.
+
 ---
 
 ## 🚀 Hướng dẫn chạy
