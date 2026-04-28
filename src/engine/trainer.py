@@ -228,6 +228,16 @@ class MedicalVQATrainer:
         history_dir = self.config.get("history_dir")
         
         print(f"[INFO] Bắt đầu huấn luyện trong {epochs} epochs...")
+        
+        # Log to WandB if available
+        if wandb.run is not None:
+            wandb.config.update({
+                'total_epochs': epochs,
+                'patience': patience,
+                'variant': self.config.get('variant', 'Unknown'),
+                'device': str(self.device),
+                'use_amp': self.use_amp,
+            })
         for epoch in range(1, epochs + 1):
             train_loss = self.train_epoch(epoch)
             metrics = self.val_epoch(tokenizer, epoch=epoch)
