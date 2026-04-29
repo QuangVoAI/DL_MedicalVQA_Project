@@ -384,6 +384,9 @@ def train(args):
             "output_dir": "./checkpoints/DPO",
             "per_device_train_batch_size": config['train'].get('dpo_batch_size', 2),
             "num_train_epochs": config['train'].get('dpo_epochs', 3),
+            "learning_rate": float(config.get('dpo', {}).get('learning_rate', 5.0e-6)),
+            "lr_scheduler_type": "cosine",       # [OPTIMIZED] Giúp hội tụ mượt mà hơn
+            "warmup_ratio": 0.1,                 # [OPTIMIZED] Tránh sốc gradient ở epoch đầu
             "bf16": True,
             "remove_unused_columns": False,
             "logging_steps": 10
@@ -481,8 +484,11 @@ def train(args):
         training_args = build_training_arguments(
             TrainingArguments,
             output_dir="./checkpoints/B2",
-            per_device_train_batch_size=config['train']['batch_size'],
+            per_device_train_batch_size=config['train'].get('b2_batch_size', 4),
             num_train_epochs=config['train'].get('epochs', 3),
+            learning_rate=float(config['train'].get('b2_lr', 2.0e-5)),
+            lr_scheduler_type="cosine",          # [OPTIMIZED] 
+            warmup_ratio=0.1,                    # [OPTIMIZED]
             bf16=True,
             remove_unused_columns=False,
             logging_steps=10,
@@ -601,7 +607,7 @@ if __name__ == "__main__":
     # Auto-generate comparison charts after training
     if not args.no_compare:
         import subprocess, sys
-        log_dir  = "logs/history"
+        log_dir  = "logs/medical_vqa/history"
         out_dir  = "results/charts"
         print(f"\n[INFO] 📊 Tự động vẽ biểu đồ so sánh 5 model → {out_dir}/")
         try:

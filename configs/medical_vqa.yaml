@@ -54,7 +54,7 @@ model_b:
   lora_r: 16
   lora_alpha: 32
   lora_dropout: 0.05
-  lora_target_modules: ["q_proj", "v_proj", "k_proj", "o_proj"]
+  lora_target_modules: ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"] # [OPTIMIZED] Thêm MLP layers giúp tăng mạnh khả năng suy luận y khoa
 
 # ── DPO (Reinforcement Learning) ──
 dpo:
@@ -70,9 +70,12 @@ train:
   a_epochs: 50                        # A1 + A2 (Direction A) model epochs
   epochs: 5                           # B2 fine-tuned model epochs
   dpo_epochs: 3                       # DPO training epochs
-  batch_size: 32                      # [OPTIMIZED FOR 4090] Tăng từ 8 lên 32 để tận dụng 24GB VRAM
+  batch_size: 32                      # [OPTIMIZED FOR A1/A2]
+  b2_batch_size: 4                    # [OPTIMIZED FOR 4090] Batch size an toàn cho LLaVA-Med (tránh OOM)
+  dpo_batch_size: 2                   # [OPTIMIZED FOR 4090] Batch size an toàn cho DPO
   eval_batch_size: 16                 # [OPTIMIZED FOR 4090] Tăng tốc độ Evaluation
-  learning_rate: 3.0e-4
+  learning_rate: 3.0e-4               # Cho Hướng A
+  b2_lr: 2.0e-5                       # Cho B2 (SFT) - chuẩn cho LLaVA
   phobert_lr: 1.0e-5
   vision_lr: 1.0e-5
   label_smoothing: 0.1
