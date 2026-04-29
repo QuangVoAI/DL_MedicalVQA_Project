@@ -88,15 +88,90 @@ def train(args):
     with open(args.config, 'r', encoding='utf-8') as f:
         config = yaml.safe_load(f)
 
-    # Khởi tạo WandB
-    if os.environ.get('WANDB_API_KEY'):
-        wandb.login(key=os.environ.get('WANDB_API_KEY'))
+    # ── WandB Setup ──────────────────────────────────────────────────────────
+    _wandb_cfg = config.get("wandb", {})
+    _use_wandb = bool(os.environ.get("WANDB_API_KEY") or os.environ.get("WANDB_MODE"))
+
+    if _use_wandb:
+        _api_key = os.environ.get("WANDB_API_KEY")
+        if _api_key:
+            wandb.login(key=_api_key)
+
+        # Offline mode: set WANDB_MODE=offline hoặc config wandb.offline: true
+        _offline = _wandb_cfg.get("offline", False) or \
+                   os.environ.get("WANDB_MODE", "").lower() == "offline"
+        if _offline:
+            os.environ["WANDB_MODE"] = "offline"
+            print("[INFO] WandB chạy ở chế độ OFFLINE (sync sau bằng: wandb sync)")
+
+        # Tags theo variant từ YAML
+        _tags = _wandb_cfg.get("tags", {}).get(args.variant, [])
+
+        # Rich config ghi đầy đủ thông tin experiment
+        _run_config = {
+            # ── Model architecture ──
+            "variant":               args.variant,
+            "decoder_type":          config["model_a"].get("decoder_type"),
+            "image_encoder":         config["model_a"].get("image_encoder"),
+            "text_encoder":          config["model_a"].get("text_encoder"),
+            "hidden_size":           config["model_a"].get("hidden_size"),
+            "transformer_heads":     config["model_a"].get("transformer_heads"),
+            "transformer_ff_dim":    config["model_a"].get("transformer_ff_dim"),
+            "transformer_layers":    config["model_a"].get("transformer_decoder_layers"),
+            "norm_first":            config["model_a"].get("transformer_norm_first"),
+            "freeze_phobert_layers": config["model_a"].get("freeze_phobert_layers"),
+            # ── Training ──
+            "learning_rate":         config["train"].get("learning_rate"),
+            "phobert_lr":            config["train"].get("phobert_lr"),
+            "vision_lr":             config["train"].get("vision_lr"),
+            "batch_size":            config["train"].get("batch_size"),
+            "grad_accum_steps":      config["train"].get("gradient_accumulation_steps"),
+            "effective_batch":       config["train"].get("batch_size", 32) *
+                                     config["train"].get("gradient_accumulation_steps", 1),
+            "label_smoothing":       config["train"].get("label_smoothing"),
+            "open_loss_weight":      config["train"].get("open_loss_weight"),
+            "warmup_epochs":         config["train"].get("warmup_epochs"),
+            "scheduler":             config["train"].get("scheduler"),
+            "patience":              config["train"].get("patience"),
+            "use_amp":               config["train"].get("use_amp"),
+            # ── Data ──
+            "dataset":               config["data"].get("dataset_name"),
+            "max_question_len":      config["data"].get("max_question_len"),
+            "max_answer_len":        config["data"].get("max_answer_len"),
+            # ── Eval ──
+            "beam_width":            config["eval"].get("beam_width_a") if args.variant in ("A1", "A2")
+                                     else config["eval"].get("beam_width_b"),
+        }
+
+        # Thêm hardware info
+        if torch.cuda.is_available():
+            _run_config["gpu_name"]    = torch.cuda.get_device_name(0)
+            _run_config["gpu_count"]   = torch.cuda.device_count()
+            _run_config["vram_gb"]     = round(torch.cuda.get_device_properties(0).total_memory / 1e9, 1)
+
+        _entity = _wandb_cfg.get("entity") or None   # None = WandB dùng default entity
+
         wandb.init(
-            project='MedicalVQA-Vietnam',
-            name=f'Variant-{args.variant}',
-            config=config
+            project=_wandb_cfg.get("project", "MedicalVQA-Vietnam"),
+            entity=_entity,
+            name=f"{args.variant}-{datetime.now().strftime('%m%d-%H%M')}",
+            group=_wandb_cfg.get("group", "DL-Final"),
+            job_type=_wandb_cfg.get("job_type", "train"),
+            tags=_tags,
+            notes=_wandb_cfg.get("notes", ""),
+            config=_run_config,
+            save_code=_wandb_cfg.get("save_code", True),
+            reinit=True,          # An toàn khi chạy nhiều variant liên tiếp
         )
-    
+        print(f"[INFO] ✅ WandB run: {wandb.run.url}")
+
+        # Watch model gradients nếu được bật
+        if _wandb_cfg.get("watch_model", False):
+            # model chưa khởi tạo ở đây — hook sẽ được gọi sau khi model được tạo
+            os.environ["_WANDB_WATCH_PENDING"] = "1"
+    else:
+        print("[INFO] WandB không được cấu hình (thiếu WANDB_API_KEY) — bỏ qua logging.")
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[INFO] Thiết bị sử dụng: {device}")
     history_dir = create_history_dir(config.get("log_dir", "logs/medical_vqa"), args.variant)
@@ -164,7 +239,7 @@ def train(args):
     )
     val_loader = DataLoader(
         val_ds, 
-        batch_size=config['train'].get('eval_batch_size', 8), 
+        batch_size=config['train']['eval_batch_size'] if 'eval_batch_size' in config['train'] else 8, 
         collate_fn=vqa_collate_fn
     )
 
@@ -177,6 +252,20 @@ def train(args):
             hidden_size=config['model_a'].get('hidden_size', 768),
             phobert_model=config['model_a'].get('phobert_model', "vinai/phobert-base")
         ).to(device)
+
+        # Log model param count lên WandB
+        if wandb.run:
+            total_params     = sum(p.numel() for p in model.parameters())
+            trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+            wandb.config.update({
+                "total_params_M":     round(total_params / 1e6, 2),
+                "trainable_params_M": round(trainable_params / 1e6, 2),
+            })
+            print(f"[INFO] Tổng params: {total_params/1e6:.1f}M | Trainable: {trainable_params/1e6:.1f}M")
+            # wandb.watch: chỉ bật nếu log_gradients: true
+            if _wandb_cfg.get("log_gradients", False):
+                wandb.watch(model, log="gradients",
+                            log_freq=_wandb_cfg.get("log_freq", 50))
         
         # Thiết lập Optimizer với Differential Learning Rate
         optimizer = optim.AdamW([
@@ -212,7 +301,13 @@ def train(args):
             optimizer=optimizer,
             scheduler=scheduler,
             device=device,
-            config={**config, 'variant': args.variant, 'history_dir': history_dir},
+            config={
+                **config,
+                'variant': args.variant,
+                'history_dir': history_dir,
+                # Pass tunable open-loss weight so trainer doesn't use hardcoded value
+                'open_loss_weight': config['train'].get('open_loss_weight', 2.0),
+            },
             pad_token_id=tokenizer.pad_token_id,
             beam_width=beam_width
         )
@@ -220,6 +315,8 @@ def train(args):
 
         print(f"[INFO] Bắt đầu huấn luyện cấu hình {args.variant} ({epochs} epochs)...")
         trainer.train(epochs, tokenizer=tokenizer)
+        if wandb.run:
+            wandb.finish()
         return
 
     elif args.variant == 'DPO':
@@ -350,7 +447,11 @@ def train(args):
             logging_steps=10,
             evaluation_strategy="epoch",
             save_strategy="epoch",
-            save_total_limit=3
+            save_total_limit=2,
+            # [FIX B2] load best checkpoint automatically — prevents epoch-5 overfit
+            load_best_model_at_end=config['train'].get('b2_load_best_model_at_end', True),
+            metric_for_best_model=config['train'].get('b2_metric_for_best', 'eval_loss'),
+            greater_is_better=False,
         )
 
         # Khởi tạo SFTTrainer với cơ chế fallback cho phiên bản TRL
@@ -401,17 +502,43 @@ def train(args):
         print(f"BLEU-4: {metrics.get('bleu4_normalized', metrics.get('bleu4', 0)):.4f}")
         print(f"BERTScore: {metrics.get('bert_score_raw', metrics.get('bert_score', 0)):.4f}")
         print(f"Semantic Score: {metrics.get('semantic_raw', metrics.get('semantic', 0)):.4f}")
+        # [FIX] Lưu dưới dạng record có 'epoch' để compare_models.py có thể parse
         save_history_records(history_dir, [{
+            "epoch": 1,
             "variant": "B1",
             "beam_width": beam_width,
+            "train_loss": 0.0,   # zero-shot không có train loss
+            "val_accuracy_normalized": float(metrics.get('accuracy_normalized', metrics.get('accuracy', 0))),
+            "val_f1_normalized":       float(metrics.get('f1_normalized', metrics.get('f1', 0))),
+            "val_bleu4_normalized":    float(metrics.get('bleu4_normalized', metrics.get('bleu4', 0))),
+            "val_bert_score_raw":      float(metrics.get('bert_score_raw', metrics.get('bert_score', 0))),
+            "val_semantic_raw":        float(metrics.get('semantic_raw', metrics.get('semantic', 0))),
             "metrics": metrics,
         }])
         return
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, default="configs/medical_vqa.yaml")
-    parser.add_argument("--variant", type=str, choices=['A1', 'A2', 'B1', 'B2', 'DPO'], required=True)
-    parser.add_argument("--debug", action="store_true")
+    parser.add_argument("--config",      type=str, default="configs/medical_vqa.yaml")
+    parser.add_argument("--variant",     type=str, choices=['A1', 'A2', 'B1', 'B2', 'DPO'], required=True)
+    parser.add_argument("--debug",       action="store_true")
+    parser.add_argument("--no_compare",  action="store_true",
+                        help="Bỏ qua vẽ chart so sánh 5 model sau khi train xong")
     args = parser.parse_args()
     train(args)
+
+    # Auto-generate comparison charts after training
+    if not args.no_compare:
+        import subprocess, sys
+        log_dir  = "logs/history"
+        out_dir  = "results/charts"
+        print(f"\n[INFO] 📊 Tự động vẽ biểu đồ so sánh 5 model → {out_dir}/")
+        try:
+            subprocess.run(
+                [sys.executable, "scripts/compare_models.py",
+                 "--log_dir", log_dir, "--out", out_dir],
+                check=False
+            )
+        except Exception as e:
+            print(f"[WARNING] compare_models.py thất bại: {e}")
+            print("  Chạy thủ công: python scripts/compare_models.py")

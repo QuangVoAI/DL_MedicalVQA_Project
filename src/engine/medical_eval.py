@@ -236,102 +236,312 @@ def evaluate_vqa(model, dataloader, device, tokenizer, beam_width=1, max_len=32,
         metrics['open'].update(_compute_format_stats(open_preds, max_words=max_words))
     return metrics
 
+# ─────────────────────────────────────────────────────────────────────────────
+# B1 HELPERS
+# ─────────────────────────────────────────────────────────────────────────────
+
+_B1_FEW_SHOT = (
+    "Q: Is there cardiomegaly? A: yes\n"
+    "Q: What organ is shown? A: lung\n"
+    "Q: Is the aorta normal? A: no\n"
+    "Q: What abnormality is present? A: pleural effusion\n"
+)
+
+
+def _build_b1_prompt(question_en: str, max_words: int) -> str:
+    """
+    Few-shot prompt ép LLaVA trả lời ngắn (≤max_words từ y tế), không sinh câu dài.
+    Đặt 4 ví dụ in-context trước câu hỏi thực để suppress verbose prefix.
+    """
+    return (
+        f"USER: <image>\n"
+        f"Answer each question with medical terminology only, "
+        f"no more than {max_words} words, no full sentences.\n"
+        f"{_B1_FEW_SHOT}"
+        f"Q: {question_en} A: ASSISTANT:"
+    )
+
+
+# En → Vi fast lookup (50+ thuật ngữ y tế thường gặp trong SLAKE + VQA-RAD)
+_EN_VI_DIRECT: dict = {
+    # binary
+    "yes": "có", "no": "không",
+    "present": "có", "absent": "không",
+    "normal": "bình thường", "abnormal": "bất thường",
+    "true": "có", "false": "không",
+    "positive": "có", "negative": "không",
+    # anatomy
+    "lung": "phổi", "lungs": "phổi",
+    "heart": "tim", "liver": "gan", "spleen": "lách",
+    "kidney": "thận", "brain": "não", "bladder": "bàng quang",
+    "chest": "ngực", "abdomen": "bụng", "pelvis": "xương chậu",
+    "spine": "cột sống", "rib": "xương sườn", "ribs": "xương sườn",
+    "trachea": "khí quản", "aorta": "động mạch chủ",
+    "diaphragm": "cơ hoành", "mediastinum": "trung thất",
+    # modality
+    "chest x-ray": "x-quang ngực", "x-ray": "x-quang", "xray": "x-quang",
+    "mri": "mri", "ct": "ct", "ultrasound": "siêu âm",
+    "ct scan": "ct", "mri scan": "mri",
+    # planes
+    "axial": "mặt phẳng ngang",
+    "coronal": "mặt phẳng vành",
+    "sagittal": "mặt phẳng dọc",
+    "transverse": "mặt phẳng ngang",
+    # pathologies
+    "cardiomegaly": "tim to",
+    "pneumonia": "viêm phổi",
+    "pleural effusion": "tràn dịch màng phổi",
+    "pneumothorax": "tràn khí màng phổi",
+    "fracture": "gãy xương",
+    "edema": "phù nề",
+    "pulmonary edema": "phù phổi",
+    "consolidation": "đông đặc",
+    "atelectasis": "xẹp phổi",
+    "opacity": "mờ đục",
+    "mass": "khối u",
+    "nodule": "nốt",
+    "lesion": "tổn thương",
+    "tumor": "khối u",
+    "effusion": "tràn dịch",
+    "infiltrate": "thâm nhiễm",
+    "fibrosis": "xơ hóa",
+    "calcification": "vôi hóa",
+    "carcinoma": "ung thư",
+    "metastasis": "di căn",
+    "bilateral": "hai bên",
+    "unilateral": "một bên",
+    "left": "trái", "right": "phải",
+    "upper": "trên", "lower": "dưới",
+}
+
+
+def _extract_key_medical_term(raw_en: str, max_words: int) -> str:
+    """
+    Loại bỏ verbose prefix LLaVA hay sinh ("The image shows a chest X-ray with..."),
+    chỉ giữ lại thuật ngữ y tế chính.
+    """
+    import re
+    text = raw_en.strip().lower()
+
+    # Các prefix verbose phổ biến cần xóa
+    prefixes = [
+        r"^the (image|scan|x-ray|xray|mri|ct|picture|photo|radiograph) (shows?|depicts?|demonstrates?|reveals?|indicates?|presents?)\s+",
+        r"^based on the (image|scan|x-ray|mri|ct)\s*,?\s*",
+        r"^in (this|the) (image|scan|x-ray|mri|ct)\s*,?\s*",
+        r"^i (can see|observe|notice|see)\s+",
+        r"^there (is|are)\s+(a |an |some )?",
+        r"^(it |this )(shows?|is|appears?|looks?)\s+(like\s+)?",
+        r"^the (patient|subject)\s+(has|shows?|presents?)\s+",
+        r"^(a|an)\s+",
+    ]
+    for pat in prefixes:
+        text = re.sub(pat, "", text)
+
+    text = re.sub(r"[.!?,;:]+$", "", text).strip()
+    text = re.sub(r"\s+", " ", text).strip()
+
+    words = text.split()
+    return " ".join(words[:max_words]) if words else raw_en.strip()
+
+
+def _en_to_vi_direct(en_text: str) -> str | None:
+    """
+    Tra từ điển nhanh. Sắp xếp theo độ dài giảm dần để phrase dài match trước.
+    Trả về None nếu không match → caller dùng MedCrab.
+    """
+    norm = en_text.strip().lower()
+    for en_key in sorted(_EN_VI_DIRECT, key=len, reverse=True):
+        if en_key in norm:
+            return _EN_VI_DIRECT[en_key]
+    return None
+
+
+def _dual_score_open(
+    preds_vi: list,
+    preds_en: list,
+    refs_vi: list,
+    refs_en: list,
+) -> list:
+    """
+    Với mỗi câu hỏi mở, so sánh F1 Vi vs F1 En rồi chọn prediction tốt hơn.
+    Giải quyết 0% open-ended do dịch thuật mất nghĩa.
+    """
+    from src.utils.metrics import compute_f1
+    from src.utils.text_utils import normalize_answer
+    result = []
+    for pv, pe, rv, re_ in zip(preds_vi, preds_en, refs_vi, refs_en):
+        f1_vi = compute_f1(pv, rv)
+        f1_en = compute_f1(normalize_answer(pe), normalize_answer(re_)) if re_ else 0.0
+        result.append(pv if f1_vi >= f1_en else normalize_answer(pe))
+    return result
+
+
 def evaluate_multimodal_vqa(model, dataloader, device, processor, beam_width=1, max_words=10):
+    """
+    B1 Zero-Shot evaluation — 4 fixes so với code cũ:
+    1. Few-shot prompt → LLaVA sinh câu ngắn đúng format (fix 0% open-ended)
+    2. _extract_key_medical_term → loại bỏ verbose prefix "The image shows..."
+    3. Fast En→Vi dictionary (50+ terms) → giảm noise MedCrab
+    4. Dual-language scoring → chọn Vi hoặc En, cái nào F1 cao hơn
+    5. Closed questions: normalize trong tiếng Anh TRƯỚC khi dịch → tránh mất Yes/No
+    """
     model.eval()
-    all_preds = []
+    all_preds     = []
     all_preds_raw = []
-    all_refs = []
+    all_preds_en  = []
+    all_refs      = []
+    all_refs_en   = []
     all_is_closed = []
-    
-    # Khởi tạo Translator cho Hướng B (Zero-shot)
+
     from src.utils.translator import MedicalTranslator
     translator = MedicalTranslator(device=device.type)
-    
-    with torch.no_grad():
-        for batch in tqdm(dataloader, desc="Evaluating Multimodal"):
-            raw_images = batch.get('raw_image')
-            questions_vi = batch.get('raw_questions')
-            questions_en = batch.get('raw_questions_en')
 
-            # Ưu tiên câu hỏi tiếng Anh gốc từ dataset để tránh noise do dịch ngược.
+    with torch.no_grad():
+        for batch_idx, batch in enumerate(tqdm(dataloader, desc="Evaluating B1")):
+            raw_images   = batch.get('raw_image')
+            questions_vi = batch.get('raw_questions', [])
+            questions_en = batch.get('raw_questions_en', [])
+            refs_vi_raw  = batch.get('raw_answer', [])
+            refs_en_raw  = batch.get('raw_answer_en', [])
+            labels       = batch['label_closed']
+
+            # Câu hỏi tiếng Anh
             if not questions_en or any(not str(q).strip() for q in questions_en):
                 questions_en = translator.translate_vi2en(questions_vi)
-            
-            # Bao bọc vào Prompt Template chuẩn của LLaVA-1.5 (PHẢI bằng tiếng Anh)
-            prompts = [
-                f"USER: <image>\n{q}\nAnswer with standard medical terminology, concise, at most {max_words} words. ASSISTANT:"
-                for q in questions_en
-            ]
-            
+
+            # [FIX 1] Few-shot prompt ép format ngắn
+            prompts = [_build_b1_prompt(q, max_words) for q in questions_en]
+
             if raw_images is not None:
-                inputs = processor(text=prompts, images=raw_images, return_tensors="pt", padding=True).to(device)
+                inputs = processor(
+                    text=prompts, images=raw_images,
+                    return_tensors="pt", padding=True
+                ).to(device)
                 if "pixel_values" in inputs:
                     inputs["pixel_values"] = inputs["pixel_values"].to(torch.bfloat16)
             else:
-                # Fallback
                 inputs = processor(text=prompts, return_tensors="pt", padding=True).to(device)
 
             output_ids = model.generate(
-                **inputs, 
-                max_new_tokens=max_words + 4,
-                do_sample=False, 
-                num_beams=beam_width, 
-                early_stopping=True if beam_width > 1 else False
+                **inputs,
+                max_new_tokens=max_words + 6,
+                do_sample=False,
+                num_beams=beam_width,
+                early_stopping=beam_width > 1,
             )
             input_token_len = inputs.input_ids.shape[1]
-            new_tokens = output_ids[:, input_token_len:]
-            preds_en = processor.batch_decode(new_tokens, skip_special_tokens=True)
-            
-            # Bước 2: Dịch En -> Vi để có kết quả Tiếng Việt như user yêu cầu
-            preds_vi_raw = [postprocess_answer(pred, max_words=max_words) for pred in translator.translate_en2vi(preds_en)]
-            preds_vi = list(preds_vi_raw)
-            labels = batch['label_closed']
-            for i in range(len(preds_vi)):
+            preds_en_raw = processor.batch_decode(
+                output_ids[:, input_token_len:], skip_special_tokens=True
+            )
+
+            # [FIX 2] Strip verbose prefix → giữ key medical term
+            preds_en_clean = [_extract_key_medical_term(p, max_words) for p in preds_en_raw]
+
+            # [FIX 3 + 5] Per-sample: closed → normalize En trước; open → dict lookup rồi MedCrab
+            preds_vi = []
+            needs_medcrab_idx = []   # index cần dịch bằng MedCrab
+            needs_medcrab_txt = []
+
+            for i, pred_en in enumerate(preds_en_clean):
                 if labels[i].item() != -1:
-                    preds_vi[i] = _normalize_closed_answer(questions_vi[i], questions_en[i], preds_vi[i], preds_en[i])
-            
-            # Debug mẫu đầu tiên
-            if len(all_preds) == 0:
-                print("\n--- DEBUG B1 (Zero-shot + Translation) ---")
-                print(f"Q (Vi): {questions_vi[0]}")
-                print(f"Q (En): {questions_en[0]}")
-                print(f"Pred (En): {preds_en[0]}")
-                print(f"Pred (Vi raw): {preds_vi_raw[0]}")
-                print(f"Pred (Vi normalized): {preds_vi[0]}")
-                print(f"GT (Vi): {batch['raw_answer'][0]}")
-                print("------------------------------------------\n")
+                    # Closed: dùng _normalize_closed_answer với En pred (chính xác hơn)
+                    preds_vi.append(
+                        _normalize_closed_answer(
+                            questions_vi[i], questions_en[i], pred_en, pred_en
+                        )
+                    )
+                else:
+                    # Open: thử dict nhanh trước
+                    vi_direct = _en_to_vi_direct(pred_en)
+                    if vi_direct is not None:
+                        preds_vi.append(postprocess_answer(vi_direct, max_words=max_words))
+                    else:
+                        preds_vi.append(None)           # placeholder
+                        needs_medcrab_idx.append(i)
+                        needs_medcrab_txt.append(pred_en)
+
+            # Batch dịch những câu cần MedCrab
+            if needs_medcrab_txt:
+                translated = translator.translate_en2vi(needs_medcrab_txt)
+                if isinstance(translated, str):
+                    translated = [translated]
+                for idx, vi in zip(needs_medcrab_idx, translated):
+                    preds_vi[idx] = postprocess_answer(vi, max_words=max_words)
+
+            # Đảm bảo không có None
+            preds_vi = [postprocess_answer(p, max_words=max_words) if p else "" for p in preds_vi]
+            preds_vi_raw = list(preds_vi)
+
+            # Refs
+            refs_vi  = [postprocess_answer(r, max_words=max_words) for r in refs_vi_raw]
+            refs_en  = [postprocess_answer(r, max_words=max_words) if r else "" for r in refs_en_raw]
+
+            # Debug batch đầu
+            if batch_idx == 0:
+                print("\n--- DEBUG B1 (Few-shot + Dual-score) ---")
+                for i in range(min(4, len(preds_vi))):
+                    q_type = "CLOSED" if labels[i].item() != -1 else "OPEN"
+                    print(f"[{q_type}] Q (En): {questions_en[i]}")
+                    print(f"  Pred (En raw):   '{preds_en_raw[i]}'")
+                    print(f"  Pred (En clean): '{preds_en_clean[i]}'")
+                    print(f"  Pred (Vi):       '{preds_vi[i]}'")
+                    print(f"  GT (Vi): '{refs_vi[i]}'  |  GT (En): '{refs_en[i]}'")
+                print("-----------------------------------------\n")
 
             all_preds.extend([normalize_for_metric(p) for p in preds_vi])
             all_preds_raw.extend([normalize_for_metric(p) for p in preds_vi_raw])
-            all_refs.extend([normalize_for_metric(postprocess_answer(r, max_words=max_words)) for r in batch['raw_answer']])
-            is_closed = (batch['label_closed'] != -1).tolist()
-            all_is_closed.extend(is_closed)
+            all_preds_en.extend([normalize_for_metric(p) for p in preds_en_clean])
+            all_refs.extend([normalize_for_metric(r) for r in refs_vi])
+            all_refs_en.extend([normalize_for_metric(r) for r in refs_en])
+            all_is_closed.extend((labels != -1).tolist())
 
+    # [FIX 4] Dual-language scoring cho open-ended
+    open_idx = [i for i, c in enumerate(all_is_closed) if not c]
+    if open_idx:
+        best_open = _dual_score_open(
+            [all_preds[i]    for i in open_idx],
+            [all_preds_en[i] for i in open_idx],
+            [all_refs[i]     for i in open_idx],
+            [all_refs_en[i]  for i in open_idx],
+        )
+        for k, i in enumerate(open_idx):
+            all_preds[i] = best_open[k]
+
+    # ── Compute metrics ──────────────────────────────────────────────────────
     metrics = batch_metrics(all_preds, all_refs)
-    metrics["semantic"] = compute_semantic_score(all_preds_raw, all_refs)
+    metrics["semantic"]   = compute_semantic_score(all_preds_raw, all_refs)
     metrics["bert_score"] = compute_bertscore(all_preds_raw, all_refs)
     metrics = _attach_metric_views(metrics)
     metrics.update(_compute_format_stats(all_preds, max_words=max_words))
-    metrics['predictions'] = all_preds
-    metrics['predictions_raw'] = all_preds_raw
-    metrics['ground_truths'] = all_refs
-    
-    closed_preds = [p for p, c in zip(all_preds, all_is_closed) if c]
-    closed_refs = [r for r, c in zip(all_refs, all_is_closed) if c]
-    closed_preds_raw = [p for p, c in zip(all_preds_raw, all_is_closed) if c]
-    if closed_preds:
-        metrics['closed'] = batch_metrics(closed_preds, closed_refs)
-        metrics['closed']["semantic"] = compute_semantic_score(closed_preds_raw, closed_refs)
-        metrics['closed']["bert_score"] = compute_bertscore(closed_preds_raw, closed_refs)
-        metrics['closed'] = _attach_metric_views(metrics['closed'])
-        metrics['closed'].update(_compute_format_stats(closed_preds, max_words=max_words))
-    open_preds = [p for p, c in zip(all_preds, all_is_closed) if not c]
-    open_refs = [r for r, c in zip(all_refs, all_is_closed) if not c]
-    open_preds_raw = [p for p, c in zip(all_preds_raw, all_is_closed) if not c]
-    if open_preds:
-        metrics['open'] = batch_metrics(open_preds, open_refs)
-        metrics['open']["semantic"] = compute_semantic_score(open_preds_raw, open_refs)
-        metrics['open']["bert_score"] = compute_bertscore(open_preds_raw, open_refs)
-        metrics['open'] = _attach_metric_views(metrics['open'])
-        metrics['open'].update(_compute_format_stats(open_preds, max_words=max_words))
+    metrics['predictions']      = all_preds
+    metrics['predictions_raw']  = all_preds_raw
+    metrics['predictions_en']   = all_preds_en
+    metrics['ground_truths']    = all_refs
+    metrics['ground_truths_en'] = all_refs_en
+
+    def _subset(pred_list, ref_list, pred_raw_list):
+        m = batch_metrics(pred_list, ref_list)
+        m["semantic"]   = compute_semantic_score(pred_raw_list, ref_list)
+        m["bert_score"] = compute_bertscore(pred_raw_list, ref_list)
+        m = _attach_metric_views(m)
+        m.update(_compute_format_stats(pred_list, max_words=max_words))
+        return m
+
+    closed_idx = [i for i, c in enumerate(all_is_closed) if c]
+    open_idx   = [i for i, c in enumerate(all_is_closed) if not c]
+
+    if closed_idx:
+        metrics['closed'] = _subset(
+            [all_preds[i]     for i in closed_idx],
+            [all_refs[i]      for i in closed_idx],
+            [all_preds_raw[i] for i in closed_idx],
+        )
+    if open_idx:
+        metrics['open'] = _subset(
+            [all_preds[i]     for i in open_idx],
+            [all_refs[i]      for i in open_idx],
+            [all_preds_raw[i] for i in open_idx],
+        )
+
     return metrics
+

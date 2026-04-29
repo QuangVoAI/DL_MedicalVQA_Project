@@ -5,6 +5,7 @@ from tqdm import tqdm
 import os
 import csv
 import json
+from src.utils.early_stopping import DynamicClassWeights
 
 class MedicalVQATrainer:
     def __init__(self, model, train_loader, val_loader, optimizer, device, config, scheduler=None, pad_token_id=0, beam_width=1):
@@ -17,16 +18,17 @@ class MedicalVQATrainer:
         self.config = config
         self.beam_width = beam_width
         
-        # [FIX] Đặt class weights thủ công để boost class "có" (index 1) giảm class imbalance
-        self.criterion_closed = nn.CrossEntropyLoss(
-            weight=torch.tensor([1.0, 2.5]).to(device)
-        )
-        print("[INFO] Closed-head class weights manually set: không=1.0, có=2.5")
-        
+        # [FIX] Dynamic class weights computed from actual data distribution
+        # Replaces hard-coded [1.0, 2.5] which may not match real imbalance ratio
+        dynamic_weights = DynamicClassWeights.compute_weights(train_loader, device=device)
+        self.criterion_closed = nn.CrossEntropyLoss(weight=dynamic_weights)
+
+        # [NOTE] Label smoothing only on open-ended head: closed-head needs sharp 0/1
         self.criterion_open = nn.CrossEntropyLoss(
-            ignore_index=pad_token_id, 
+            ignore_index=pad_token_id,
             label_smoothing=config['train'].get('label_smoothing', 0.0)
         )
+        self.criterion_closed_hard = nn.CrossEntropyLoss(weight=dynamic_weights)  # no smoothing
         
         # AMP (Automatic Mixed Precision)
         self.use_amp = config['train'].get('use_amp', False) and device.type == 'cuda'
@@ -141,8 +143,11 @@ class MedicalVQATrainer:
                     coverage = probs.sum(dim=1)  # [N, vocab] — tổng xác suất mỗi token qua các bước
                     coverage_loss = torch.clamp(coverage - 1.0, min=0.0).mean()  # phạt nếu > 1 lần
                     
-                    loss += (loss_gen_open + 0.3 * length_penalty + 0.1 * coverage_loss) * 3.0
-                
+                    # [TUNED] Reduce weight 3.0→2.0: open head was dominating,
+                    # causing closed-head accuracy to plateau (observed in A1/A2 runs)
+                    open_loss_weight = self.config.get('open_loss_weight', 2.0)
+                    loss += (loss_gen_open + 0.3 * length_penalty + 0.1 * coverage_loss) * open_loss_weight
+
                 # [OPTIMIZATION] Normalize loss by accumulation steps for proper gradient scaling
                 loss = loss / accumulation_steps
             
@@ -174,8 +179,11 @@ class MedicalVQATrainer:
                     "lr_decoder": decoder_lr,
                 })
             pbar.set_postfix({"loss": f"{loss.item():.3f}", "dec_lr": f"{decoder_lr:.1e}", "vis_lr": f"{vision_lr:.1e}"})
-            
-        return total_loss / len(self.train_loader)
+
+        epoch_train_loss = total_loss / len(self.train_loader)
+        if wandb.run:
+            wandb.log({"train_loss_epoch": epoch_train_loss})
+        return epoch_train_loss
 
 
     def val_epoch(self, tokenizer, epoch=0):
@@ -256,6 +264,8 @@ class MedicalVQATrainer:
                 "val_bert_score": float(metrics.get("bert_score", 0.0)),
                 "val_bert_score_raw": float(metrics.get("bert_score_raw", metrics.get("bert_score", 0.0))),
                 "val_semantic_raw": float(metrics.get("semantic_raw", metrics.get("semantic", 0.0))),
+                "val_closed_accuracy": float(metrics.get("closed", {}).get("accuracy", -1)),
+                "val_open_accuracy": float(metrics.get("open", {}).get("accuracy", -1)),
                 "best_so_far": bool(is_best),
                 "metrics": metrics,
             }
@@ -269,18 +279,16 @@ class MedicalVQATrainer:
                 save_path = os.path.join(ckpt_dir, f"medical_vqa_{variant}_best.pth")
                 torch.save(self.model.state_dict(), save_path)
                 
-                # [CRITICAL FIX] Lưu checkpoint riêng hỗ trợ resume để không bị mất warmup/scheduler state
                 resume_path = os.path.join(ckpt_dir, f"medical_vqa_{variant}_resume.pth")
                 checkpoint = {
                     'epoch': epoch,
                     'model_state_dict': self.model.state_dict(),
                     'optimizer_state_dict': self.optimizer.state_dict(),
-                    'best_val_acc': best_val_acc
+                    'scheduler_state_dict': self.scheduler.state_dict() if self.scheduler else None,
+                    'best_val_acc': best_val_acc,
+                    'train_loss': float(train_loss),
                 }
-                if self.scheduler:
-                    checkpoint['scheduler_state_dict'] = self.scheduler.state_dict()
                 torch.save(checkpoint, resume_path)
-                
                 print(f"🌟 Best model saved with Accuracy: {val_acc:.4f}")
             else:
                 counter += 1
@@ -293,4 +301,151 @@ class MedicalVQATrainer:
         print("[INFO] Huấn luyện hoàn tất.")
         if history_dir:
             self.save_history(history_dir)
+
+        # ── Auto-plot sau khi training kết thúc ──────────────────────────────
+        if history_dir and len(self.history) >= 1:
+            chart_paths = self.plot_training_results(history_dir)
+            print(f"[INFO] 📊 Đã lưu {len(chart_paths)} biểu đồ tại: {history_dir}")
+
         return self.history
+
+    # ── Visualization ────────────────────────────────────────────────────────
+
+    def plot_training_results(self, output_dir: str) -> list:
+        """
+        Tự động vẽ và lưu 4 biểu đồ sau khi training kết thúc:
+        1. Train Loss theo epoch
+        2. Val Accuracy + F1 + BLEU-4 (multi-metric)
+        3. Closed vs Open Accuracy (bar per epoch)
+        4. BERTScore + Semantic Score
+        Trả về list các đường dẫn file ảnh đã lưu.
+        """
+        try:
+            import matplotlib
+            matplotlib.use("Agg")          # Non-interactive backend (an toàn cho server)
+            import matplotlib.pyplot as plt
+            import matplotlib.ticker as mticker
+        except ImportError:
+            print("[WARNING] matplotlib chưa cài — bỏ qua vẽ biểu đồ.")
+            return []
+
+        os.makedirs(output_dir, exist_ok=True)
+        variant   = self.config.get('variant', 'Model')
+        epochs    = [r["epoch"] for r in self.history]
+        saved     = []
+
+        # Palette
+        COLORS = {
+            "loss":     "#e74c3c",
+            "accuracy": "#2ecc71",
+            "f1":       "#3498db",
+            "bleu4":    "#9b59b6",
+            "bert":     "#e67e22",
+            "semantic": "#1abc9c",
+            "closed":   "#2980b9",
+            "open":     "#e74c3c",
+        }
+
+        def _finish(fig, fname):
+            fig.tight_layout()
+            path = os.path.join(output_dir, fname)
+            fig.savefig(path, dpi=150, bbox_inches="tight")
+            plt.close(fig)
+            # Upload to WandB if available
+            if wandb.run:
+                wandb.log({fname.replace(".png", ""): wandb.Image(path)})
+            saved.append(path)
+
+        # ── Chart 1: Train Loss ──────────────────────────────────────────────
+        fig, ax = plt.subplots(figsize=(9, 5))
+        ax.plot(epochs, [r["train_loss"] for r in self.history],
+                color=COLORS["loss"], linewidth=2.5, marker="o", markersize=5,
+                label="Train Loss")
+        ax.set_title(f"[{variant}] Train Loss per Epoch", fontsize=14, fontweight="bold")
+        ax.set_xlabel("Epoch"); ax.set_ylabel("Loss")
+        ax.xaxis.set_major_locator(mticker.MaxNLocator(integer=True))
+        ax.legend(); ax.grid(True, alpha=0.3)
+        _finish(fig, f"{variant}_01_train_loss.png")
+
+        # ── Chart 2: Validation Metrics (Acc / F1 / BLEU-4) ─────────────────
+        fig, ax = plt.subplots(figsize=(10, 5))
+        ax.plot(epochs, [r["val_accuracy_normalized"] for r in self.history],
+                color=COLORS["accuracy"], linewidth=2.5, marker="o", label="Accuracy")
+        ax.plot(epochs, [r["val_f1_normalized"] for r in self.history],
+                color=COLORS["f1"], linewidth=2.5, marker="s", label="F1")
+        ax.plot(epochs, [r["val_bleu4_normalized"] for r in self.history],
+                color=COLORS["bleu4"], linewidth=2.5, marker="^", label="BLEU-4")
+        # Mark best epoch
+        best_epoch = max(self.history, key=lambda r: r["val_accuracy_normalized"])
+        ax.axvline(x=best_epoch["epoch"], color="gray", linestyle="--", alpha=0.6,
+                   label=f"Best epoch {best_epoch['epoch']} ({best_epoch['val_accuracy_normalized']:.2%})")
+        ax.set_title(f"[{variant}] Validation Metrics per Epoch", fontsize=14, fontweight="bold")
+        ax.set_xlabel("Epoch"); ax.set_ylabel("Score")
+        ax.set_ylim(0, 1.05)
+        ax.xaxis.set_major_locator(mticker.MaxNLocator(integer=True))
+        ax.yaxis.set_major_formatter(mticker.PercentFormatter(xmax=1.0))
+        ax.legend(loc="lower right"); ax.grid(True, alpha=0.3)
+        _finish(fig, f"{variant}_02_val_metrics.png")
+
+        # ── Chart 3: Closed vs Open Accuracy ────────────────────────────────
+        closed_vals = [r["val_closed_accuracy"] for r in self.history]
+        open_vals   = [r["val_open_accuracy"]   for r in self.history]
+        has_closed  = any(v >= 0 for v in closed_vals)
+        has_open    = any(v >= 0 for v in open_vals)
+
+        if has_closed or has_open:
+            fig, ax = plt.subplots(figsize=(10, 5))
+            w = 0.35
+            x = range(len(epochs))
+            if has_closed:
+                c_vals = [v if v >= 0 else 0 for v in closed_vals]
+                ax.bar([i - w/2 for i in x], c_vals, w, label="Closed (Yes/No)",
+                       color=COLORS["closed"], alpha=0.85)
+            if has_open:
+                o_vals = [v if v >= 0 else 0 for v in open_vals]
+                ax.bar([i + w/2 for i in x], o_vals, w, label="Open-ended",
+                       color=COLORS["open"], alpha=0.85)
+            ax.set_xticks(list(x)); ax.set_xticklabels([f"E{e}" for e in epochs])
+            ax.set_title(f"[{variant}] Closed vs Open Accuracy per Epoch",
+                         fontsize=14, fontweight="bold")
+            ax.set_ylabel("Accuracy")
+            ax.set_ylim(0, 1.05)
+            ax.yaxis.set_major_formatter(mticker.PercentFormatter(xmax=1.0))
+            ax.legend(); ax.grid(True, alpha=0.3, axis="y")
+            _finish(fig, f"{variant}_03_closed_vs_open.png")
+
+        # ── Chart 4: BERTScore + Semantic Score ──────────────────────────────
+        bert_vals     = [r["val_bert_score_raw"] for r in self.history]
+        semantic_vals = [r["val_semantic_raw"]   for r in self.history]
+        if any(v > 0 for v in bert_vals + semantic_vals):
+            fig, ax = plt.subplots(figsize=(9, 5))
+            ax.plot(epochs, bert_vals,     color=COLORS["bert"],     linewidth=2.5,
+                    marker="o", label="BERTScore")
+            ax.plot(epochs, semantic_vals, color=COLORS["semantic"], linewidth=2.5,
+                    marker="s", label="Semantic Score")
+            ax.set_title(f"[{variant}] BERTScore & Semantic Score per Epoch",
+                         fontsize=14, fontweight="bold")
+            ax.set_xlabel("Epoch"); ax.set_ylabel("Score")
+            ax.set_ylim(0, 1.05)
+            ax.xaxis.set_major_locator(mticker.MaxNLocator(integer=True))
+            ax.yaxis.set_major_formatter(mticker.PercentFormatter(xmax=1.0))
+            ax.legend(); ax.grid(True, alpha=0.3)
+            _finish(fig, f"{variant}_04_bert_semantic.png")
+
+        # ── Print final summary table ─────────────────────────────────────────
+        print("\n" + "═" * 72)
+        print(f"  📊  TRAINING SUMMARY — {variant}")
+        print("═" * 72)
+        print(f"  {'Epoch':>5}  {'TrainLoss':>10}  {'Accuracy':>9}  {'F1':>7}  {'BLEU-4':>7}  {'Best':>5}")
+        print("─" * 72)
+        for r in self.history:
+            star = "  ★" if r.get("best_so_far") else ""
+            print(
+                f"  {r['epoch']:>5}  {r['train_loss']:>10.4f}  "
+                f"{r['val_accuracy_normalized']:>9.2%}  "
+                f"{r['val_f1_normalized']:>7.2%}  "
+                f"{r['val_bleu4_normalized']:>7.2%}{star}"
+            )
+        print("═" * 72 + "\n")
+
+        return saved

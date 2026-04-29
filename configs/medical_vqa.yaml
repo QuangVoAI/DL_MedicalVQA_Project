@@ -40,10 +40,12 @@ model_a:
 
   # Decoder configs (A1 = lstm, A2 = transformer)
   decoder_type: "lstm"                # "lstm" hoặc "transformer"
-  # Transformer Decoder specific
+  # Transformer Decoder specific (A2)
   transformer_heads: 8
-  transformer_ff_dim: 1024
-  transformer_decoder_layers: 4
+  transformer_ff_dim: 3072            # 4 × hidden_size (768×4) — chuẩn Transformer gốc
+  transformer_decoder_layers: 3
+  transformer_norm_first: true        # Pre-LN: giúp A2 hội tụ sớm và ổn định hơn
+  transformer_dropout: 0.1
 
 # ── Hướng B: Multimodal Pretrained ──
 model_b:
@@ -56,10 +58,12 @@ model_b:
 
 # ── DPO (Reinforcement Learning) ──
 dpo:
-  preference_data: "data/preference_data_slake.json"  # [FIX] Đổi path cho SLAKE format
+  preference_data: "data/preference_data_slake.json"
   beta: 0.1                           # DPO temperature
   num_epochs: 3
   learning_rate: 5.0e-6
+  eval_steps: 50                      # [NEW] Đánh giá VQA mỗi 50 steps để track reward margin
+  save_best_only: true                # Chỉ lưu checkpoint khi reward margin cải thiện
 
 # ── Training ──
 train:
@@ -74,16 +78,20 @@ train:
   label_smoothing: 0.1
   grad_clip: 5.0
   patience: 10
-  warmup_epochs: 5                    # Tăng nhẹ để ổn định
+  warmup_epochs: 3                    # [TUNED] 5→3: dataset vừa, warmup dài làm chậm hội tụ
   scheduler: "cosine"
   eta_min: 1.0e-6
   eval_every: 2
+  open_loss_weight: 2.0               # [TUNED] 3.0→2.0: giảm dominance của open-head
   use_amp: true                       # Luôn bật Mixed Precision cho T4
   gradient_accumulation_steps: 2      # [OPTIMIZATION] Effective batch = 32*2 = 64
   use_discriminative_lr: true         # [OPTIMIZATION] Different LR for different layers
   use_dynamic_class_weights: true     # [OPTIMIZATION] Compute class weights from data
   num_workers: 16                     # [OPTIMIZED FOR VAST.AI] Tăng từ 2 lên 16 nhờ CPU 36 cores
   pin_memory: true                    # Tăng tốc truyền dữ liệu lên GPU
+  # B2 SFT specific
+  b2_load_best_model_at_end: true     # [FIX B2] Dùng best checkpoint (epoch 4), không dùng epoch cuối
+  b2_metric_for_best: "eval_loss"     # B2 early stop theo eval_loss (đáy tại epoch 4)
 
 # ── Evaluation ──
 eval:
@@ -111,3 +119,24 @@ model_variants:
     direction: "B"
     fine_tuned: true
     description: "Hướng B fine-tuned"
+
+# ── WandB ──
+wandb:
+  project: "MedicalVQA-Vietnam"           # Tên project trên wandb.ai
+  entity: "SpringWang08"                               # Username hoặc team name (để trống = dùng default)
+  group: "DL-Final-523H0173-523H0178"     # Nhóm tất cả 5 variant trong 1 group
+  job_type: "train"                        # train | eval | debug
+  # Tags tự động gắn cho từng variant
+  tags:
+    A1:  ["lstm", "modular", "direction-A", "phobert", "densenet"]
+    A2:  ["transformer", "pre-ln", "weight-tying", "direction-A", "phobert"]
+    B1:  ["zero-shot", "llava-med", "direction-B", "few-shot-prompt"]
+    B2:  ["sft", "lora", "fine-tuned", "direction-B", "llava-med"]
+    DPO: ["dpo", "rlhf", "preference", "direction-B"]
+  notes: "Medical VQA Vietnamese — SLAKE + VQA-RAD merged dataset"
+  log_gradients: false      # true = log gradient histogram (chậm hơn ~10%)
+  log_freq: 50              # Log mỗi N batch
+  watch_model: false        # true = theo dõi weights (tốn bandwidth)
+  save_code: true           # Upload source code lên WandB
+  # Offline mode khi không có Internet (sync sau bằng wandb sync)
+  offline: false            # đặt true khi train trên Vast.ai không có internet
