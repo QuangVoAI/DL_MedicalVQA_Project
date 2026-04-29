@@ -7,6 +7,8 @@ from transformers import AutoTokenizer
 import yaml
 import argparse
 import os
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 import csv
 import json
 from datetime import datetime
