@@ -350,9 +350,8 @@ def _en_to_vi_direct(en_text: str) -> str | None:
     Trả về None nếu không match → caller dùng Translation Model.
     """
     norm = en_text.strip().lower()
-    for en_key in sorted(_EN_VI_DIRECT, key=len, reverse=True):
-        if en_key in norm:
-            return _EN_VI_DIRECT[en_key]
+    if norm in _EN_VI_DIRECT:
+        return _EN_VI_DIRECT[norm]
     return None
 
 
