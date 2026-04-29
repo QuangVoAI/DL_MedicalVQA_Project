@@ -8,7 +8,7 @@ class MedicalTranslator:
     """
     Dịch thuật y tế với cơ chế Lazy Loading + Independent Fallback.
     - Vi→En: MarianMT (Helsinki-NLP) trên CPU
-    - En→Vi: MarianMT (Helsinki-NLP) trên CPU
+    - En→Vi: MedCrab-1.5B (4-bit) trên GPU phụ (nếu có)
     Mỗi model load độc lập — nếu 1 cái fail, cái kia vẫn hoạt động.
     """
     def __init__(self, device="cpu", dict_path="data/medical_dict.json"):
@@ -63,17 +63,30 @@ class MedicalTranslator:
         except Exception as e:
             print(f"[WARNING] ❌ Helsinki-NLP load thất bại: {e}")
         
-        # ── 2. Helsinki-NLP En→Vi (Chạy trên CPU, nhẹ ~300MB) ──
+        # ── 2. MedCrab En→Vi (4-bit trên GPU) ──
         try:
-            from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
-            en2vi_id = "Helsinki-NLP/opus-mt-en-vi"
-            self._en2vi_tokenizer = AutoTokenizer.from_pretrained(en2vi_id)
-            self._en2vi_model = AutoModelForSeq2SeqLM.from_pretrained(en2vi_id).to("cpu")
+            from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
+            bnb_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_use_double_quant=True,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_compute_dtype=torch.float16
+            )
+            medcrab_id = "pnnbao-ump/MedCrab-1.5B"
+            self._en2vi_tokenizer = AutoTokenizer.from_pretrained(medcrab_id)
+            
+            d_map = {"": self.gpu_device} if self.gpu_device.type == "cuda" else None
+            self._en2vi_model = AutoModelForCausalLM.from_pretrained(
+                medcrab_id,
+                quantization_config=bnb_config,
+                device_map=d_map,
+                low_cpu_mem_usage=True
+            )
             self._en2vi_model.eval()
             self._en2vi_ready = True
-            print("[INFO] ✅ Helsinki-NLP (En→Vi) đã sẵn sàng trên CPU")
+            print(f"[INFO] ✅ MedCrab-1.5B (En→Vi) đã sẵn sàng trên {self.gpu_device}")
         except Exception as e:
-            print(f"[WARNING] ❌ Helsinki-NLP (En→Vi) load thất bại: {e}")
+            print(f"[WARNING] ❌ MedCrab load thất bại: {e}")
 
     # ── Vi → En ──
     def translate_vi2en(self, text):
@@ -126,7 +139,7 @@ class MedicalTranslator:
             if t in direct_map:
                 return direct_map[t]
         
-        # 2. Dịch bằng Helsinki-NLP
+        # 2. Dịch bằng MedCrab
         self._lazy_load()
         if not self._en2vi_ready:
             if isinstance(text, list):
@@ -134,11 +147,11 @@ class MedicalTranslator:
             return text
         
         if isinstance(text, list):
-            return [self._helsinki_en2vi_translate(t) for t in text]
-        return self._helsinki_en2vi_translate(text)
+            return [self._medcrab_translate(t) for t in text]
+        return self._medcrab_translate(text)
 
-    def _helsinki_en2vi_translate(self, text):
-        """Dịch 1 câu En→Vi bằng Helsinki-NLP."""
+    def _medcrab_translate(self, text):
+        """Dịch 1 câu En→Vi bằng MedCrab với ràng buộc ngắn gọn."""
         # Kiểm tra ánh xạ trực tiếp trước
         t = text.lower().strip().rstrip(".").rstrip(",").strip()
         direct_map = {
@@ -149,10 +162,21 @@ class MedicalTranslator:
             return direct_map[t]
         
         try:
-            inputs = self._en2vi_tokenizer(text, return_tensors="pt", padding=True, truncation=True, max_length=128)
+            prompt = f"English: {text}\nVietnamese (trả lời ngắn gọn):"
+            inputs = self._en2vi_tokenizer(prompt, return_tensors="pt").to(self.gpu_device)
+            
             with torch.no_grad():
-                output_ids = self._en2vi_model.generate(**inputs, max_new_tokens=128)
-            translated = self._en2vi_tokenizer.decode(output_ids[0], skip_special_tokens=True)
+                outputs = self._en2vi_model.generate(
+                    **inputs,
+                    max_new_tokens=30,
+                    repetition_penalty=1.2,
+                    temperature=0.1,
+                    do_sample=False,
+                    pad_token_id=self._en2vi_tokenizer.eos_token_id
+                )
+            
+            full_text = self._en2vi_tokenizer.decode(outputs[0], skip_special_tokens=True)
+            translated = full_text.split("Vietnamese (trả lời ngắn gọn):")[-1].strip()
             return translated
         except Exception as e:
             print(f"[WARNING] En→Vi error: {e}")

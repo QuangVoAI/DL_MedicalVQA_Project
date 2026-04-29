@@ -312,6 +312,16 @@ _EN_VI_DIRECT: dict = {
     "unilateral": "một bên",
     "left": "trái", "right": "phải",
     "upper": "trên", "lower": "dưới",
+    "right upper quadrant": "phía trên bên phải",
+    "left upper quadrant": "phía trên bên trái",
+    "right lower quadrant": "phía dưới bên phải",
+    "left lower quadrant": "phía dưới bên trái",
+    "right upper": "phía trên bên phải",
+    "left upper": "phía trên bên trái",
+    "upper left": "phía trên bên trái",
+    "upper right": "phía trên bên phải",
+    "lower left": "phía dưới bên trái",
+    "lower right": "phía dưới bên phải",
 }
 
 
@@ -332,7 +342,8 @@ def _extract_key_medical_term(raw_en: str, max_words: int) -> str:
         r"^there (is|are)\s+(a |an |some )?",
         r"^(it |this )(shows?|is|appears?|looks?)\s+(like\s+)?",
         r"^the (patient|subject)\s+(has|shows?|presents?)\s+",
-        r"^(a|an)\s+",
+        r"^(a|an|the)\s+",
+        r"^[a-z\s]+ is (located|seen|found|present)( in| at| on)?\s+(the\s+)?",
     ]
     for pat in prefixes:
         text = re.sub(pat, "", text)
