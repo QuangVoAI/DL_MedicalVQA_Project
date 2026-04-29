@@ -297,8 +297,8 @@ def print_summary_table(all_data: dict):
 
 def main():
     parser = argparse.ArgumentParser(description="So sánh 5 variant Medical VQA")
-    parser.add_argument("--log_dir", default="logs/history",
-                        help="Thư mục gốc chứa history (default: logs/history)")
+    parser.add_argument("--log_dir", default="logs/medical_vqa/history",
+                        help="Thư mục gốc chứa history (default: logs/medical_vqa/history)")
     parser.add_argument("--out", default="results/charts",
                         help="Thư mục lưu biểu đồ (default: results/charts)")
     args = parser.parse_args()
