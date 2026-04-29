@@ -434,8 +434,8 @@ def evaluate_multimodal_vqa(model, dataloader, device, processor, beam_width=1, 
                 output_ids[:, input_token_len:], skip_special_tokens=True
             )
 
-            # [FIX 2] Strip verbose prefix → giữ key medical term
-            preds_en_clean = [_extract_key_medical_term(p, max_words) for p in preds_en_raw]
+            # [FIX 2] Strip verbose prefix → giữ key medical term. Tránh cắt vụn câu tiếng Anh để Dịch thuật hiểu đúng.
+            preds_en_clean = [_extract_key_medical_term(p, 50) for p in preds_en_raw]
 
             # [FIX 3 + 5] Per-sample: closed → normalize En trước; open → dict lookup rồi Translation Model
             preds_vi = []

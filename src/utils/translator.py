@@ -109,23 +109,29 @@ class MedicalTranslator:
         # 1. Ánh xạ trực tiếp nhãn nhị phân (nhanh + chính xác 100%)
         if isinstance(text, str):
             t = text.lower().strip().rstrip(".").rstrip(",").strip()
+            
+            # Xử lý các câu trả lời dài bắt đầu bằng Yes/No của LLaVA (vd: "No, the image does not...")
+            if t.startswith("yes"):
+                return "có"
+            if t.startswith("no"):
+                return "không"
+                
             # Exact match trước
             direct_map = {
-                "yes": "có", "no": "không",
                 "true": "có", "false": "không",
                 "correct": "có", "incorrect": "không",
                 "present": "có", "absent": "không",
                 "normal": "bình thường", "abnormal": "bất thường",
             }
             if t in direct_map:
-                return postprocess_answer(direct_map[t], max_words=10)
+                return direct_map[t]
         
         # 2. Dịch bằng Helsinki-NLP
         self._lazy_load()
         if not self._en2vi_ready:
             if isinstance(text, list):
-                return [postprocess_answer(t, max_words=10) for t in text]
-            return postprocess_answer(text, max_words=10)
+                return text
+            return text
         
         if isinstance(text, list):
             return [self._helsinki_en2vi_translate(t) for t in text]
@@ -140,14 +146,14 @@ class MedicalTranslator:
             "normal": "bình thường", "abnormal": "bất thường",
         }
         if t in direct_map:
-            return postprocess_answer(direct_map[t], max_words=10)
+            return direct_map[t]
         
         try:
             inputs = self._en2vi_tokenizer(text, return_tensors="pt", padding=True, truncation=True, max_length=128)
             with torch.no_grad():
                 output_ids = self._en2vi_model.generate(**inputs, max_new_tokens=128)
             translated = self._en2vi_tokenizer.decode(output_ids[0], skip_special_tokens=True)
-            return postprocess_answer(translated, max_words=10)
+            return translated
         except Exception as e:
             print(f"[WARNING] En→Vi error: {e}")
-            return postprocess_answer(text, max_words=10)
+            return text
