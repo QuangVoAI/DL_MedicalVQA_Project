@@ -15,6 +15,11 @@ transformers.utils.import_utils.check_torch_load_is_safe = lambda: None
 import transformers.modeling_utils
 transformers.modeling_utils.check_torch_load_is_safe = lambda: None
 
+# [Bypass FSDPModule Error] Sửa lỗi thư viện trl import FSDPModule trên PyTorch cũ
+import torch.distributed.fsdp as fsdp
+if not hasattr(fsdp, "FSDPModule"):
+    fsdp.FSDPModule = fsdp.FullyShardedDataParallel
+
 import csv
 import json
 from datetime import datetime
