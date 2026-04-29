@@ -161,7 +161,7 @@ def train(args):
             notes=_wandb_cfg.get("notes", ""),
             config=_run_config,
             save_code=_wandb_cfg.get("save_code", True),
-            reinit=True,          # An toàn khi chạy nhiều variant liên tiếp
+            reinit="finish_previous",    # Kết thúc run trước nếu chạy nhiều variant liên tiếp
         )
         print(f"[INFO] ✅ WandB run: {wandb.run.url}")
 

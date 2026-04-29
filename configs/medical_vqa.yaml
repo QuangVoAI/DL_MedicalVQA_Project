@@ -123,7 +123,7 @@ model_variants:
 # ── WandB ──
 wandb:
   project: "MedicalVQA-Vietnam"           # Tên project trên wandb.ai
-  entity: "SpringWang08"                               # Username hoặc team name (để trống = dùng default)
+  entity: ""                               # Để trống = dùng account đang login (vxq123)
   group: "DL-Final-523H0173-523H0178"     # Nhóm tất cả 5 variant trong 1 group
   job_type: "train"                        # train | eval | debug
   # Tags tự động gắn cho từng variant
