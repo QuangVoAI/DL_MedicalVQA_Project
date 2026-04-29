@@ -347,7 +347,7 @@ def _extract_key_medical_term(raw_en: str, max_words: int) -> str:
 def _en_to_vi_direct(en_text: str) -> str | None:
     """
     Tra từ điển nhanh. Sắp xếp theo độ dài giảm dần để phrase dài match trước.
-    Trả về None nếu không match → caller dùng MedCrab.
+    Trả về None nếu không match → caller dùng Translation Model.
     """
     norm = en_text.strip().lower()
     for en_key in sorted(_EN_VI_DIRECT, key=len, reverse=True):
@@ -381,7 +381,7 @@ def evaluate_multimodal_vqa(model, dataloader, device, processor, beam_width=1, 
     B1 Zero-Shot evaluation — 4 fixes so với code cũ:
     1. Few-shot prompt → LLaVA sinh câu ngắn đúng format (fix 0% open-ended)
     2. _extract_key_medical_term → loại bỏ verbose prefix "The image shows..."
-    3. Fast En→Vi dictionary (50+ terms) → giảm noise MedCrab
+    3. Fast En→Vi dictionary (50+ terms) → giảm noise dịch thuật
     4. Dual-language scoring → chọn Vi hoặc En, cái nào F1 cao hơn
     5. Closed questions: normalize trong tiếng Anh TRƯỚC khi dịch → tránh mất Yes/No
     """
@@ -437,10 +437,10 @@ def evaluate_multimodal_vqa(model, dataloader, device, processor, beam_width=1, 
             # [FIX 2] Strip verbose prefix → giữ key medical term
             preds_en_clean = [_extract_key_medical_term(p, max_words) for p in preds_en_raw]
 
-            # [FIX 3 + 5] Per-sample: closed → normalize En trước; open → dict lookup rồi MedCrab
+            # [FIX 3 + 5] Per-sample: closed → normalize En trước; open → dict lookup rồi Translation Model
             preds_vi = []
-            needs_medcrab_idx = []   # index cần dịch bằng MedCrab
-            needs_medcrab_txt = []
+            needs_translate_idx = []   # index cần dịch
+            needs_translate_txt = []
 
             for i, pred_en in enumerate(preds_en_clean):
                 if labels[i].item() != -1:
@@ -457,15 +457,15 @@ def evaluate_multimodal_vqa(model, dataloader, device, processor, beam_width=1, 
                         preds_vi.append(postprocess_answer(vi_direct, max_words=max_words))
                     else:
                         preds_vi.append(None)           # placeholder
-                        needs_medcrab_idx.append(i)
-                        needs_medcrab_txt.append(pred_en)
+                        needs_translate_idx.append(i)
+                        needs_translate_txt.append(pred_en)
 
-            # Batch dịch những câu cần MedCrab
-            if needs_medcrab_txt:
-                translated = translator.translate_en2vi(needs_medcrab_txt)
+            # Batch dịch những câu cần Translation Model
+            if needs_translate_txt:
+                translated = translator.translate_en2vi(needs_translate_txt)
                 if isinstance(translated, str):
                     translated = [translated]
-                for idx, vi in zip(needs_medcrab_idx, translated):
+                for idx, vi in zip(needs_translate_idx, translated):
                     preds_vi[idx] = postprocess_answer(vi, max_words=max_words)
 
             # Đảm bảo không có None
