@@ -26,17 +26,19 @@ wheels/
 
 # Environment
 .env
+!.env.example         # Giữ template — không chứa secrets
 .venv
 env/
 venv/
 ENV/
 conda_env/
+medical_vqa.pth       # Python path file tạo bởi setup.sh
 
 # Project Specific - Data (Large files)
 data/images/
 data/*.zip
 data/*.json
-!data/meddict.json  # Giữ lại từ điển y khoa nếu nó nhẹ
+!data/meddict.json    # Giữ lại từ điển y khoa nếu nó nhẹ
 
 # Model Checkpoints
 checkpoints/
@@ -45,9 +47,13 @@ checkpoints/
 *.bin
 *.safetensors
 
-# Logs
+# Logs & Results
 logs/
 *.log
+results/charts/       # PNG charts lớn — tái tạo bằng compare_models.py
+
+# WandB local cache
+wandb/
 
 # OS
 .DS_Store
