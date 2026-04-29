@@ -415,8 +415,36 @@ def train(args):
         trainer.train()
         os.makedirs("checkpoints", exist_ok=True)
         torch.save(model.state_dict(), f"checkpoints/medical_vqa_dpo.pth")
+        
+        # [FIX] Đánh giá DPO sau khi train xong để có Accuracy, F1, BLEU cho biểu đồ so sánh
+        from src.engine.medical_eval import evaluate_multimodal_vqa
+        print("[INFO] Đang chạy đánh giá nghiệm thu trên tập Validation cho DPO...")
+        model.eval()
+        metrics = evaluate_multimodal_vqa(
+            model, 
+            val_loader, 
+            device, 
+            processor, 
+            beam_width=config['eval'].get('beam_width_b', 1),
+            max_words=answer_max_words
+        )
+        
+        print(f"\n[RESULT DPO]")
+        print(f"Accuracy: {metrics.get('accuracy_normalized', 0):.4f}")
+        print(f"F1: {metrics.get('f1_normalized', 0):.4f}")
+        
+        final_epoch = training_args.num_train_epochs
+        trainer.state.log_history.append({
+            "epoch": final_epoch,
+            "val_accuracy_normalized": metrics.get('accuracy_normalized'),
+            "val_f1_normalized": metrics.get('f1_normalized'),
+            "val_bleu4_normalized": metrics.get('bleu4_normalized'),
+            "val_bert_score_raw": metrics.get('bert_score_raw'),
+            "val_semantic_raw": metrics.get('semantic_raw')
+        })
+        
         save_history_records(history_dir, trainer.state.log_history)
-        print("[SUCCESS] Đã lưu checkpoint DPO.")
+        print("[SUCCESS] Đã lưu checkpoint và metrics DPO.")
         return
 
     elif args.variant == 'B2':
@@ -487,6 +515,36 @@ def train(args):
                 trainer = SFTTrainer(**trainer_kwargs, tokenizer=processor.tokenizer)
             
         trainer.train()
+        
+        # [FIX] Đánh giá B2 sau khi train xong để có Accuracy, F1, BLEU cho biểu đồ so sánh
+        from src.engine.medical_eval import evaluate_multimodal_vqa
+        print("[INFO] Đang chạy đánh giá nghiệm thu trên tập Validation cho B2...")
+        # Đưa model về evaluation mode
+        model.eval()
+        metrics = evaluate_multimodal_vqa(
+            model, 
+            val_loader, 
+            device, 
+            processor, 
+            beam_width=config['eval'].get('beam_width_b', 1),
+            max_words=answer_max_words
+        )
+        
+        print(f"\n[RESULT B2]")
+        print(f"Accuracy: {metrics.get('accuracy_normalized', 0):.4f}")
+        print(f"F1: {metrics.get('f1_normalized', 0):.4f}")
+        
+        # Gắn kết quả vào history để compare_models.py đọc được
+        final_epoch = training_args.num_train_epochs
+        trainer.state.log_history.append({
+            "epoch": final_epoch,
+            "val_accuracy_normalized": metrics.get('accuracy_normalized'),
+            "val_f1_normalized": metrics.get('f1_normalized'),
+            "val_bleu4_normalized": metrics.get('bleu4_normalized'),
+            "val_bert_score_raw": metrics.get('bert_score_raw'),
+            "val_semantic_raw": metrics.get('semantic_raw')
+        })
+        
         save_history_records(history_dir, trainer.state.log_history)
         return
 
