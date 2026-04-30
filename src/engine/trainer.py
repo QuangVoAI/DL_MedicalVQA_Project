@@ -138,10 +138,11 @@ class MedicalVQATrainer:
                     pred_lengths = (open_targets != self.criterion_open.ignore_index).float().sum(dim=-1).mean()
                     length_penalty = torch.clamp(1.0 - pred_lengths / 15.0, min=0.0)
                     
-                    # Coverage penalty: phạt nếu model lặp từ (tập trung quá vào 1 token)
+                    # Thay coverage loss bằng entropy penalty (đúng hơn)
+                    # Phạt khi model quá confident vào 1 token
                     probs = torch.softmax(open_logits, dim=-1)  # [N, seq, vocab]
-                    coverage = probs.sum(dim=1)  # [N, vocab] — tổng xác suất mỗi token qua các bước
-                    coverage_loss = torch.clamp(coverage - 1.0, min=0.0).mean()  # phạt nếu > 1 lần
+                    entropy = -(probs * torch.log(probs + 1e-9)).sum(dim=-1).mean()
+                    coverage_loss = torch.clamp(2.0 - entropy, min=0.0)  # phạt nếu entropy < 2.0
                     
                     # [TUNED] Reduce weight 3.0→2.0: open head was dominating,
                     # causing closed-head accuracy to plateau (observed in A1/A2 runs)
