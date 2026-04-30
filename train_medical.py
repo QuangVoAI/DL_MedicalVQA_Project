@@ -586,10 +586,26 @@ def train(args):
             variant='B2'
         )
         
-        print(f"\n[RESULT B2]")
+        print(f"\n[RESULT B2 - SHORT METRICS]")
         print(f"Accuracy: {metrics.get('accuracy_normalized', 0):.4f}")
         print(f"F1: {metrics.get('f1_normalized', 0):.4f}")
         
+        if 'long_answers_eval' in metrics:
+            print(f"\n[RESULT B2 - LONG METRICS]")
+            print(f"Accuracy: {metrics['long_answers_eval'].get('accuracy', 0):.4f}")
+            print(f"F1: {metrics['long_answers_eval'].get('f1', 0):.4f}")
+            print(f"Semantic: {metrics['long_answers_eval'].get('semantic', 0):.4f}")
+            print(f"BERTScore: {metrics['long_answers_eval'].get('bert_score', 0):.4f}")
+            
+            # Gắn thêm vào log_history cho wandb
+            trainer.state.log_history.append({
+                "epoch": training_args.num_train_epochs,
+                "val_long_accuracy": metrics['long_answers_eval'].get('accuracy', 0),
+                "val_long_f1": metrics['long_answers_eval'].get('f1', 0),
+                "val_long_semantic": metrics['long_answers_eval'].get('semantic', 0),
+                "val_long_bertscore": metrics['long_answers_eval'].get('bert_score', 0),
+            })
+            
         # Gắn kết quả vào history để compare_models.py đọc được
         final_epoch = training_args.num_train_epochs
         trainer.state.log_history.append({
@@ -624,12 +640,19 @@ def train(args):
             variant='B1'
         )
         
-        print(f"\n[RESULT B1]")
+        print(f"\n[RESULT B1 - SHORT METRICS]")
         print(f"Accuracy: {metrics.get('accuracy_normalized', metrics.get('accuracy', metrics.get('vqa_accuracy', 0))):.4f}")
         print(f"F1: {metrics.get('f1_normalized', metrics.get('f1', 0)):.4f}")
         print(f"BLEU-4: {metrics.get('bleu4_normalized', metrics.get('bleu4', 0)):.4f}")
         print(f"BERTScore: {metrics.get('bert_score_raw', metrics.get('bert_score', 0)):.4f}")
         print(f"Semantic Score: {metrics.get('semantic_raw', metrics.get('semantic', 0)):.4f}")
+        
+        if 'long_answers_eval' in metrics:
+            print(f"\n[RESULT B1 - LONG METRICS]")
+            print(f"Accuracy: {metrics['long_answers_eval'].get('accuracy', 0):.4f}")
+            print(f"F1: {metrics['long_answers_eval'].get('f1', 0):.4f}")
+            print(f"Semantic: {metrics['long_answers_eval'].get('semantic', 0):.4f}")
+            print(f"BERTScore: {metrics['long_answers_eval'].get('bert_score', 0):.4f}")
         # [FIX] Lưu dưới dạng record có 'epoch' để compare_models.py có thể parse
         save_history_records(history_dir, [{
             "epoch": 1,

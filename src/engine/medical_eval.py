@@ -204,6 +204,7 @@ def evaluate_vqa(model, dataloader, device, tokenizer, beam_width=1, max_len=32,
             all_preds_raw.extend([normalize_for_metric(p) for p in preds_text_raw])
             # [CRITICAL FIX] Dùng đáp án Tiếng Việt để chấm điểm
             all_refs.extend([normalize_for_metric(postprocess_answer(r, max_words=max_words)) for r in batch['raw_answer']])
+            all_refs_full.extend([normalize_for_metric(postprocess_answer(r, max_words=100)) for r in batch.get('raw_answer_full', batch['raw_answer'])])
             is_closed = (batch['label_closed'] != -1).tolist()
             all_is_closed.extend(is_closed)
 
@@ -234,6 +235,14 @@ def evaluate_vqa(model, dataloader, device, tokenizer, beam_width=1, max_len=32,
         metrics['open']["bert_score"] = compute_bertscore(open_preds_raw, open_refs)
         metrics['open'] = _attach_metric_views(metrics['open'])
         metrics['open'].update(_compute_format_stats(open_preds, max_words=max_words))
+        
+    metrics['long_answers_eval'] = {
+        "accuracy": batch_metrics(all_preds, all_refs_full).get("accuracy_normalized", 0),
+        "f1": batch_metrics(all_preds, all_refs_full).get("f1_normalized", 0),
+        "bleu4": batch_metrics(all_preds, all_refs_full).get("bleu4_normalized", 0),
+        "semantic": compute_semantic_score(all_preds_raw, all_refs_full),
+        "bert_score": compute_bertscore(all_preds_raw, all_refs_full)
+    }
     return metrics
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -395,6 +404,7 @@ def evaluate_multimodal_vqa(model, dataloader, device, processor, beam_width=1, 
     all_preds_raw = []
     all_preds_en  = []
     all_refs      = []
+    all_refs_full = []
     all_refs_en   = []
     all_is_closed = []
 
@@ -513,6 +523,7 @@ def evaluate_multimodal_vqa(model, dataloader, device, processor, beam_width=1, 
             all_preds_raw.extend([normalize_for_metric(p) for p in preds_vi_raw])
             all_preds_en.extend([normalize_for_metric(p) for p in preds_en_clean])
             all_refs.extend([normalize_for_metric(r) for r in refs_vi])
+            all_refs_full.extend([normalize_for_metric(postprocess_answer(r, max_words=100)) for r in batch.get('raw_answer_full', batch['raw_answer'])])
             all_refs_en.extend([normalize_for_metric(r) for r in refs_en])
             all_is_closed.extend((labels != -1).tolist())
 
@@ -564,6 +575,14 @@ def evaluate_multimodal_vqa(model, dataloader, device, processor, beam_width=1, 
             [all_refs[i]      for i in open_idx],
             [all_preds_raw[i] for i in open_idx],
         )
+        
+    metrics['long_answers_eval'] = {
+        "accuracy": batch_metrics(all_preds, all_refs_full).get("accuracy_normalized", 0),
+        "f1": batch_metrics(all_preds, all_refs_full).get("f1_normalized", 0),
+        "bleu4": batch_metrics(all_preds, all_refs_full).get("bleu4_normalized", 0),
+        "semantic": compute_semantic_score(all_preds_raw, all_refs_full),
+        "bert_score": compute_bertscore(all_preds_raw, all_refs_full)
+    }
 
     return metrics
 
