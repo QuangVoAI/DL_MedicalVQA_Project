@@ -71,7 +71,13 @@ train:
   epochs: 5                           # B2 fine-tuned model epochs
   dpo_epochs: 3                       # DPO training epochs
   batch_size: 32                      # [OPTIMIZED FOR A1/A2]
-  b2_batch_size: 32                    # [OPTIMIZED FOR 4090] Batch size an toàn cho LLaVA-Med (tránh OOM)
+  b2_batch_size: 1                     # Micro-batch cho LLaVA-Med; tăng effective batch bằng gradient accumulation
+  b2_gradient_accumulation_steps: 8    # Effective batch = 8, an toàn hơn nhiều cho 7B multimodal
+  b2_eval_batch_size: 1                # Eval của LLaVA-Med cũng dễ OOM nếu để lớn
+  b2_max_length: 128                   # Giới hạn token khi SFT để giảm memory footprint
+  b2_warmup_steps: 50                  # Thay cho warmup_ratio đã deprecated
+  b2_optim: "paged_adamw_8bit"         # Optimizer tiết kiệm VRAM cho QLoRA
+  b2_num_workers: 4                    # Vừa đủ cho multimodal collator, tránh overhead
   dpo_batch_size: 32                   # [OPTIMIZED FOR 4090] Batch size an toàn cho DPO
   eval_batch_size: 16                 # [OPTIMIZED FOR 4090] Tăng tốc độ Evaluation
   learning_rate: 3.0e-4               # Cho Hướng A

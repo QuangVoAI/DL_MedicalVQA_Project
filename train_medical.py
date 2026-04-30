@@ -8,6 +8,7 @@ import yaml
 import argparse
 import os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 # [Bypass CVE-2025-32434] Bỏ qua yêu cầu nâng cấp PyTorch 2.6 của transformers
 import transformers.utils.import_utils
@@ -343,7 +344,13 @@ def train(args):
         from datasets import Dataset as HFDataset
         import json
         
-        wrapper = MultimodalVQA(model_id=config['model_b']['model_name'])
+        wrapper = MultimodalVQA(
+            model_id=config['model_b']['model_name'],
+            lora_r=int(config['model_b'].get('lora_r', 16)),
+            lora_alpha=int(config['model_b'].get('lora_alpha', 32)),
+            lora_dropout=float(config['model_b'].get('lora_dropout', 0.05)),
+            lora_target_modules=config['model_b'].get('lora_target_modules'),
+        )
         model, processor = wrapper.load_model()
         
         # Tạo/Load Preference Data
@@ -457,7 +464,13 @@ def train(args):
         from transformers import TrainingArguments, Trainer
         from datasets import Dataset as HFDataset
         
-        wrapper = MultimodalVQA(model_id=config['model_b']['model_name'])
+        wrapper = MultimodalVQA(
+            model_id=config['model_b']['model_name'],
+            lora_r=int(config['model_b'].get('lora_r', 16)),
+            lora_alpha=int(config['model_b'].get('lora_alpha', 32)),
+            lora_dropout=float(config['model_b'].get('lora_dropout', 0.05)),
+            lora_target_modules=config['model_b'].get('lora_target_modules'),
+        )
         model, processor = wrapper.load_model()
         
         def make_sft_dataset(raw_ds):
@@ -485,14 +498,22 @@ def train(args):
             sft_val = make_sft_dataset(val_ds)
             
         class MultimodalDataCollator:
-            def __init__(self, processor):
+            def __init__(self, processor, max_length=None):
                 self.processor = processor
                 self.tokenizer = processor.tokenizer
+                self.max_length = max_length
             def __call__(self, examples):
                 texts = [example["text"] for example in examples]
                 images = [example["image"] for example in examples]
-                
-                batch = self.processor(text=texts, images=images, return_tensors="pt", padding=True)
+
+                batch = self.processor(
+                    text=texts,
+                    images=images,
+                    return_tensors="pt",
+                    padding=True,
+                    truncation=True,
+                    max_length=self.max_length,
+                )
                 labels = batch["input_ids"].clone()
                 labels[labels == self.tokenizer.pad_token_id] = -100
                 
@@ -508,32 +529,46 @@ def train(args):
                 batch["labels"] = labels
                 # Remove text and image lists as Trainer only wants tensors
                 return batch
+
+        b2_micro_batch = int(config['train'].get('b2_batch_size', 1))
+        b2_grad_accum = int(config['train'].get('b2_gradient_accumulation_steps', max(config['train'].get('gradient_accumulation_steps', 2), 1)))
+        b2_max_length = int(config['train'].get('b2_max_length', config['data'].get('max_question_len', 64) + config['data'].get('max_answer_len', 20) + 32))
         
         training_args = build_training_arguments(
             TrainingArguments,
             output_dir="./checkpoints/B2",
-            per_device_train_batch_size=config['train'].get('b2_batch_size', 4),
+            per_device_train_batch_size=b2_micro_batch,
+            per_device_eval_batch_size=int(config['train'].get('b2_eval_batch_size', 1)),
+            gradient_accumulation_steps=b2_grad_accum,
             num_train_epochs=config['train'].get('epochs', 3),
             learning_rate=float(config['train'].get('b2_lr', 2.0e-5)),
             lr_scheduler_type="cosine",
-            warmup_ratio=0.1,
+            warmup_steps=int(config['train'].get('b2_warmup_steps', 50)),
             bf16=True,
+            fp16=False,
+            gradient_checkpointing=True,
             remove_unused_columns=False,
             logging_steps=10,
             evaluation_strategy="epoch",
             save_strategy="epoch",
             save_total_limit=2,
+            optim=config['train'].get('b2_optim', 'paged_adamw_8bit'),
+            max_grad_norm=float(config['train'].get('grad_clip', 1.0)),
+            dataloader_num_workers=int(config['train'].get('b2_num_workers', 4)),
+            dataloader_pin_memory=bool(config['train'].get('pin_memory', True)),
             load_best_model_at_end=config['train'].get('b2_load_best_model_at_end', True),
             metric_for_best_model=config['train'].get('b2_metric_for_best', 'eval_loss'),
             greater_is_better=False,
         )
+
+        training_args.gradient_checkpointing_kwargs = {"use_reentrant": False}
 
         trainer = Trainer(
             model=model,
             args=training_args,
             train_dataset=sft_train,
             eval_dataset=sft_val,
-            data_collator=MultimodalDataCollator(processor)
+            data_collator=MultimodalDataCollator(processor, max_length=b2_max_length)
         )
             
         trainer.train()

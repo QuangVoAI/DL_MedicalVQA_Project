@@ -7,7 +7,14 @@ class MultimodalVQA:
     Wrapper cho LLaVA-Med-7B tích hợp QLoRA 4-bit để huấn luyện trên Kaggle.
     Sử dụng kiến trúc LLaVA-1.5 (microsoft/llava-med-v1.5-7b).
     """
-    def __init__(self, model_id="chaoyinshe/llava-med-v1.5-mistral-7b-hf"):
+    def __init__(
+        self,
+        model_id="chaoyinshe/llava-med-v1.5-mistral-7b-hf",
+        lora_r=16,
+        lora_alpha=32,
+        lora_dropout=0.05,
+        lora_target_modules=None,
+    ):
         self.model_id = model_id
         
         # 1. Cấu hình Quantization 4-bit (Tiết kiệm VRAM)
@@ -20,10 +27,10 @@ class MultimodalVQA:
         
         # 2. Cấu hình LoRA (Chỉ huấn luyện một phần nhỏ tham số)
         self.peft_config = LoraConfig(
-            r=16,
-            lora_alpha=32,
-            target_modules=["q_proj", "v_proj", "k_proj", "o_proj"], # Các lớp attention
-            lora_dropout=0.05,
+            r=lora_r,
+            lora_alpha=lora_alpha,
+            target_modules=lora_target_modules or ["q_proj", "v_proj", "k_proj", "o_proj"],
+            lora_dropout=lora_dropout,
             bias="none",
             task_type="CAUSAL_LM"
         )
@@ -37,11 +44,15 @@ class MultimodalVQA:
             quantization_config=self.bnb_config,
             device_map="auto"
         )
-        
+
+        model.config.use_cache = False
+
         # Chuẩn bị mô hình cho PEFT
         model = prepare_model_for_kbit_training(model)
         model = get_peft_model(model, self.peft_config)
-        
+        model.gradient_checkpointing_enable()
+        model.enable_input_require_grads()
+
         model.print_trainable_parameters()
         return model, processor
 
