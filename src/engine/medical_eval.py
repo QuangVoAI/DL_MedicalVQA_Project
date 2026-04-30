@@ -148,7 +148,7 @@ class MedicalVQAEvaluator:
         if variant_type == 'A':
             return evaluate_vqa(model, dataloader, self.device, self.tokenizer, beam_width)
         else:
-            return evaluate_multimodal_vqa(model, dataloader, self.device, self.processor, beam_width)
+            return evaluate_multimodal_vqa(model, dataloader, self.device, self.processor, beam_width, variant=variant_type)
 
 def evaluate_vqa(model, dataloader, device, tokenizer, beam_width=1, max_len=32, max_words=10):
     model.eval()
@@ -386,14 +386,9 @@ def _dual_score_open(
     return result
 
 
-def evaluate_multimodal_vqa(model, dataloader, device, processor, beam_width=1, max_words=10):
+def evaluate_multimodal_vqa(model, dataloader, device, processor, beam_width=1, max_words=10, variant='B1'):
     """
-    B1 Zero-Shot evaluation — 4 fixes so với code cũ:
-    1. Few-shot prompt → LLaVA sinh câu ngắn đúng format (fix 0% open-ended)
-    2. _extract_key_medical_term → loại bỏ verbose prefix "The image shows..."
-    3. Fast En→Vi dictionary (50+ terms) → giảm noise dịch thuật
-    4. Dual-language scoring → chọn Vi hoặc En, cái nào F1 cao hơn
-    5. Closed questions: normalize trong tiếng Anh TRƯỚC khi dịch → tránh mất Yes/No
+    B1 Zero-Shot evaluation & B2/DPO Fine-Tuned evaluation.
     """
     model.eval()
     all_preds     = []
@@ -405,9 +400,12 @@ def evaluate_multimodal_vqa(model, dataloader, device, processor, beam_width=1, 
 
     from src.utils.translator import MedicalTranslator
     translator = MedicalTranslator(device=device.type)
+    
+    from src.models.multimodal_vqa import MultimodalVQA
+    wrapper = MultimodalVQA()
 
     with torch.no_grad():
-        for batch_idx, batch in enumerate(tqdm(dataloader, desc="Evaluating B1")):
+        for batch_idx, batch in enumerate(tqdm(dataloader, desc=f"Evaluating {variant}")):
             raw_images   = batch.get('raw_image')
             questions_vi = batch.get('raw_questions', [])
             questions_en = batch.get('raw_questions_en', [])
@@ -415,12 +413,14 @@ def evaluate_multimodal_vqa(model, dataloader, device, processor, beam_width=1, 
             refs_en_raw  = batch.get('raw_answer_en', [])
             labels       = batch['label_closed']
 
-            # Câu hỏi tiếng Anh
-            if not questions_en or any(not str(q).strip() for q in questions_en):
-                questions_en = translator.translate_vi2en(questions_vi)
-
-            # [FIX 1] Few-shot prompt ép format ngắn
-            prompts = [_build_b1_prompt(q, max_words) for q in questions_en]
+            if variant == 'B1':
+                # B1 (Zero-shot) needs English translation & English few-shot prompt
+                if not questions_en or any(not str(q).strip() for q in questions_en):
+                    questions_en = translator.translate_vi2en(questions_vi)
+                prompts = [_build_b1_prompt(q, max_words) for q in questions_en]
+            else:
+                # B2 & DPO (Fine-tuned) expect Vietnamese instruction directly
+                prompts = [wrapper.build_instruction_prompt(q, language="vi", include_answer=False) for q in questions_vi]
 
             if raw_images is not None:
                 inputs = processor(
@@ -440,43 +440,50 @@ def evaluate_multimodal_vqa(model, dataloader, device, processor, beam_width=1, 
                 early_stopping=beam_width > 1,
             )
             input_token_len = inputs.input_ids.shape[1]
-            preds_en_raw = processor.batch_decode(
+            preds_raw = processor.batch_decode(
                 output_ids[:, input_token_len:], skip_special_tokens=True
             )
 
-            # [FIX 2] Strip verbose prefix → giữ key medical term. Tránh cắt vụn câu tiếng Anh để Dịch thuật hiểu đúng.
-            preds_en_clean = [_extract_key_medical_term(p, 50) for p in preds_en_raw]
-
-            # [FIX 3 + 5] Per-sample: closed → normalize En trước; open → dict lookup rồi Translation Model
             preds_vi = []
-            needs_translate_idx = []   # index cần dịch
-            needs_translate_txt = []
-
-            for i, pred_en in enumerate(preds_en_clean):
-                if labels[i].item() != -1:
-                    # Closed: dùng _normalize_closed_answer với En pred (chính xác hơn)
-                    preds_vi.append(
-                        _normalize_closed_answer(
-                            questions_vi[i], questions_en[i], pred_en, pred_en
+            preds_en_clean = []
+            
+            if variant == 'B1':
+                # [FIX 2] Strip verbose prefix → giữ key medical term. Tránh cắt vụn câu tiếng Anh để Dịch thuật hiểu đúng.
+                preds_en_clean = [_extract_key_medical_term(p, 50) for p in preds_raw]
+    
+                # [FIX 3 + 5] Per-sample: closed → normalize En trước; open → dict lookup rồi Translation Model
+                needs_translate_idx = []   # index cần dịch
+                needs_translate_txt = []
+    
+                for i, pred_en in enumerate(preds_en_clean):
+                    if labels[i].item() != -1:
+                        # Closed: dùng _normalize_closed_answer với En pred (chính xác hơn)
+                        preds_vi.append(
+                            _normalize_closed_answer(
+                                questions_vi[i], questions_en[i], pred_en, pred_en
+                            )
                         )
-                    )
-                else:
-                    # Open: thử dict nhanh trước
-                    vi_direct = _en_to_vi_direct(pred_en)
-                    if vi_direct is not None:
-                        preds_vi.append(postprocess_answer(vi_direct, max_words=max_words))
                     else:
-                        preds_vi.append(None)           # placeholder
-                        needs_translate_idx.append(i)
-                        needs_translate_txt.append(pred_en)
-
-            # Batch dịch những câu cần Translation Model
-            if needs_translate_txt:
-                translated = translator.translate_en2vi(needs_translate_txt)
-                if isinstance(translated, str):
-                    translated = [translated]
-                for idx, vi in zip(needs_translate_idx, translated):
-                    preds_vi[idx] = postprocess_answer(vi, max_words=max_words)
+                        # Open: thử dict nhanh trước
+                        vi_direct = _en_to_vi_direct(pred_en)
+                        if vi_direct is not None:
+                            preds_vi.append(postprocess_answer(vi_direct, max_words=max_words))
+                        else:
+                            preds_vi.append(None)           # placeholder
+                            needs_translate_idx.append(i)
+                            needs_translate_txt.append(pred_en)
+    
+                # Batch dịch những câu cần Translation Model
+                if needs_translate_txt:
+                    translated = translator.translate_en2vi(needs_translate_txt)
+                    if isinstance(translated, str):
+                        translated = [translated]
+                    for idx, vi in zip(needs_translate_idx, translated):
+                        preds_vi[idx] = postprocess_answer(vi, max_words=max_words)
+            else:
+                # B2 & DPO directly outputs Vietnamese, no translation needed
+                preds_vi = preds_raw
+                preds_en_clean = [""] * len(preds_raw)
 
             # Đảm bảo không có None
             preds_vi = [postprocess_answer(p, max_words=max_words) if p else "" for p in preds_vi]
@@ -488,12 +495,16 @@ def evaluate_multimodal_vqa(model, dataloader, device, processor, beam_width=1, 
 
             # Debug batch đầu
             if batch_idx == 0:
-                print("\n--- DEBUG B1 (Few-shot + Dual-score) ---")
+                print(f"\n--- DEBUG {variant} (Evaluation) ---")
                 for i in range(min(4, len(preds_vi))):
                     q_type = "CLOSED" if labels[i].item() != -1 else "OPEN"
-                    print(f"[{q_type}] Q (En): {questions_en[i]}")
-                    print(f"  Pred (En raw):   '{preds_en_raw[i]}'")
-                    print(f"  Pred (En clean): '{preds_en_clean[i]}'")
+                    if variant == 'B1':
+                        print(f"[{q_type}] Q (En): {questions_en[i]}")
+                        print(f"  Pred (En raw):   '{preds_raw[i]}'")
+                        print(f"  Pred (En clean): '{preds_en_clean[i]}'")
+                    else:
+                        print(f"[{q_type}] Q (Vi): {questions_vi[i]}")
+                        print(f"  Pred (Vi raw):   '{preds_raw[i]}'")
                     print(f"  Pred (Vi):       '{preds_vi[i]}'")
                     print(f"  GT (Vi): '{refs_vi[i]}'  |  GT (En): '{refs_en[i]}'")
                 print("-----------------------------------------\n")
@@ -505,17 +516,18 @@ def evaluate_multimodal_vqa(model, dataloader, device, processor, beam_width=1, 
             all_refs_en.extend([normalize_for_metric(r) for r in refs_en])
             all_is_closed.extend((labels != -1).tolist())
 
-    # [FIX 4] Dual-language scoring cho open-ended
-    open_idx = [i for i, c in enumerate(all_is_closed) if not c]
-    if open_idx:
-        best_open = _dual_score_open(
-            [all_preds[i]    for i in open_idx],
-            [all_preds_en[i] for i in open_idx],
-            [all_refs[i]     for i in open_idx],
-            [all_refs_en[i]  for i in open_idx],
-        )
-        for k, i in enumerate(open_idx):
-            all_preds[i] = best_open[k]
+    # [FIX 4] Dual-language scoring cho open-ended (chỉ dùng cho B1)
+    if variant == 'B1':
+        open_idx = [i for i, c in enumerate(all_is_closed) if not c]
+        if open_idx:
+            best_open = _dual_score_open(
+                [all_preds[i]    for i in open_idx],
+                [all_preds_en[i] for i in open_idx],
+                [all_refs[i]     for i in open_idx],
+                [all_refs_en[i]  for i in open_idx],
+            )
+            for k, i in enumerate(open_idx):
+                all_preds[i] = best_open[k]
 
     # ── Compute metrics ──────────────────────────────────────────────────────
     metrics = batch_metrics(all_preds, all_refs)

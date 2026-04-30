@@ -430,7 +430,8 @@ def train(args):
             device, 
             processor, 
             beam_width=config['eval'].get('beam_width_b', 1),
-            max_words=answer_max_words
+            max_words=answer_max_words,
+            variant='DPO'
         )
         
         print(f"\n[RESULT DPO]")
@@ -534,7 +535,8 @@ def train(args):
             device, 
             processor, 
             beam_width=config['eval'].get('beam_width_b', 1),
-            max_words=answer_max_words
+            max_words=answer_max_words,
+            variant='B2'
         )
         
         print(f"\n[RESULT B2]")
@@ -571,7 +573,8 @@ def train(args):
             device, 
             processor, 
             beam_width=beam_width,
-            max_words=answer_max_words
+            max_words=answer_max_words,
+            variant='B1'
         )
         
         print(f"\n[RESULT B1]")
