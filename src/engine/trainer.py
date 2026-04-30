@@ -155,7 +155,8 @@ class MedicalVQATrainer:
             self.scaler.scale(loss).backward()
             
             # [OPTIMIZATION] Update weights only after accumulating gradients
-            if (batch_idx + 1) % accumulation_steps == 0:
+            is_last_batch = (batch_idx + 1) == len(self.train_loader)
+            if (batch_idx + 1) % accumulation_steps == 0 or is_last_batch:
                 # Gradient Clipping
                 if self.config['train'].get('grad_clip'):
                     self.scaler.unscale_(self.optimizer)

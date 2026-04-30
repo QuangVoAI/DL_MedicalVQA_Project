@@ -22,13 +22,15 @@ class CoAttentionFusion(nn.Module):
         )
 
     def forward(self, v_feats, t_feats):
-        # v_feats, t_feats: [B, 768]
-        v_seq = v_feats.unsqueeze(1) # [B, 1, 768]
-        t_seq = t_feats.unsqueeze(1) # [B, 1, 768]
+        # v_feats: [B, 49, 768] — KHÔNG cần unsqueeze nữa
+        t_seq = t_feats.unsqueeze(1)  # [B, 1, 768] — text vẫn giữ
         
         # Parallel Co-Attention
-        v_fused, _ = self.v2t_attn(v_seq, t_seq, t_seq)
-        t_fused, _ = self.t2v_attn(t_seq, v_seq, v_seq)
+        v_fused, _ = self.v2t_attn(v_feats, t_seq, t_seq)
+        t_fused, _ = self.t2v_attn(t_seq, v_feats, v_feats)
+        
+        # v_fused: [B, 49, 768] → pool về [B, 1, 768] trước khi concat
+        v_fused = v_fused.mean(dim=1, keepdim=True)
         
         # Kết hợp thông tin từ cả hai hướng
         combined = torch.cat([v_fused, t_fused], dim=-1) # [B, 1, 1536]

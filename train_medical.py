@@ -296,8 +296,9 @@ def train(args):
         else:
             epochs = config['train']['epochs']
         warmup_epochs = config['train'].get('warmup_epochs', 5)
-        total_steps = epochs * len(train_loader)
-        warmup_steps = warmup_epochs * len(train_loader)
+        accumulation_steps = config['train'].get('gradient_accumulation_steps', 2)
+        total_steps = epochs * len(train_loader) // max(accumulation_steps, 1)
+        warmup_steps = warmup_epochs * len(train_loader) // max(accumulation_steps, 1)
         
         scheduler = get_cosine_schedule_with_warmup(
             optimizer, 
