@@ -453,28 +453,29 @@ def train(args):
         return
 
     elif args.variant == 'B2':
-        # Fine-tuning LLaVA-Med (SFT)
-        from trl import SFTTrainer
-        from transformers import TrainingArguments
+        # Fine-tuning LLaVA-Med
+        from transformers import TrainingArguments, Trainer
         from datasets import Dataset as HFDataset
         
         wrapper = MultimodalVQA(model_id=config['model_b']['model_name'])
         model, processor = wrapper.load_model()
         
-        # Chuyển đổi sang HF Dataset với field 'text' mà SFTTrainer yêu cầu
         def make_sft_dataset(raw_ds):
             texts = []
+            images = []
             for i in range(len(raw_ds)):
                 item = raw_ds[i]
-                # HF dataset trả về dict, còn MedicalVQADataset trả về dict khác
                 if isinstance(item, dict):
                     q = item.get("question_vi", item.get("question", item.get("raw_questions", "")))
                     a = get_target_answer(item, max_words=answer_max_words)
-                else:
-                    q, a = "", ""
-                prompt = wrapper.build_instruction_prompt(q, language="vi", include_answer=False)
-                texts.append(f"{prompt} {a}")
-            return HFDataset.from_dict({"text": texts})
+                    prompt = wrapper.build_instruction_prompt(q, language="vi", include_answer=False)
+                    texts.append(f"{prompt} {a}")
+                    
+                    img = item.get("image", None)
+                    if img is not None:
+                        if img.mode != "RGB": img = img.convert("RGB")
+                    images.append(img)
+            return HFDataset.from_dict({"text": texts, "image": images})
         
         if hf_repo:
             sft_train = make_sft_dataset(dataset_dict['train'])
@@ -482,6 +483,31 @@ def train(args):
         else:
             sft_train = make_sft_dataset(train_ds)
             sft_val = make_sft_dataset(val_ds)
+            
+        class MultimodalDataCollator:
+            def __init__(self, processor):
+                self.processor = processor
+                self.tokenizer = processor.tokenizer
+            def __call__(self, examples):
+                texts = [example["text"] for example in examples]
+                images = [example["image"] for example in examples]
+                
+                batch = self.processor(text=texts, images=images, return_tensors="pt", padding=True)
+                labels = batch["input_ids"].clone()
+                labels[labels == self.tokenizer.pad_token_id] = -100
+                
+                # Mask prompt
+                sep_tokens = self.tokenizer.encode(" ASSISTANT:", add_special_tokens=False)
+                sep_token_id = sep_tokens[-1] if sep_tokens else None
+                if sep_token_id is not None:
+                    for i in range(len(labels)):
+                        sep_idx = (labels[i] == sep_token_id).nonzero(as_tuple=True)[0]
+                        if len(sep_idx) > 0:
+                            labels[i, :sep_idx[-1] + 1] = -100
+                
+                batch["labels"] = labels
+                # Remove text and image lists as Trainer only wants tensors
+                return batch
         
         training_args = build_training_arguments(
             TrainingArguments,
@@ -489,38 +515,26 @@ def train(args):
             per_device_train_batch_size=config['train'].get('b2_batch_size', 4),
             num_train_epochs=config['train'].get('epochs', 3),
             learning_rate=float(config['train'].get('b2_lr', 2.0e-5)),
-            lr_scheduler_type="cosine",          # [OPTIMIZED] 
-            warmup_ratio=0.1,                    # [OPTIMIZED]
+            lr_scheduler_type="cosine",
+            warmup_ratio=0.1,
             bf16=True,
             remove_unused_columns=False,
             logging_steps=10,
             evaluation_strategy="epoch",
             save_strategy="epoch",
             save_total_limit=2,
-            # [FIX B2] load best checkpoint automatically — prevents epoch-5 overfit
             load_best_model_at_end=config['train'].get('b2_load_best_model_at_end', True),
             metric_for_best_model=config['train'].get('b2_metric_for_best', 'eval_loss'),
             greater_is_better=False,
         )
 
-        # Khởi tạo SFTTrainer với cơ chế fallback cho phiên bản TRL
-        trainer_kwargs = {
-            "model": model,
-            "args": training_args,
-            "train_dataset": sft_train,
-            "eval_dataset": sft_val,
-        }
-        
-        try:
-            print("[INFO] Thử khởi tạo SFTTrainer với processing_class...")
-            trainer = SFTTrainer(**trainer_kwargs, processing_class=processor)
-        except TypeError:
-            try:
-                print("[INFO] Fallback: Thử với tokenizer...")
-                trainer = SFTTrainer(**trainer_kwargs, tokenizer=processor)
-            except TypeError:
-                print("[INFO] Fallback: Thử với tokenizer.tokenizer...")
-                trainer = SFTTrainer(**trainer_kwargs, tokenizer=processor.tokenizer)
+        trainer = Trainer(
+            model=model,
+            args=training_args,
+            train_dataset=sft_train,
+            eval_dataset=sft_val,
+            data_collator=MultimodalDataCollator(processor)
+        )
             
         trainer.train()
         
