@@ -110,6 +110,7 @@ eval:
   beam_width_b_open: 5                # Open questions của Hướng B dùng beam lớn hơn để tăng semantic match
   max_new_tokens_b_closed: 4          # Giữ câu đóng rất ngắn
   max_new_tokens_b_open: 16           # Đủ biên cho postprocess cắt về <=10 từ
+  generation_batch_size_b: 1          # Micro-batch cho generation của Hướng B để tránh OOM khi beam > 1
   metrics: ["vqa_accuracy", "bleu", "rouge_l", "meteor", "bertscore"]
   llm_judge: true
   llm_judge_model: "gemini-1.5-flash" # API model for LLM-as-a-judge

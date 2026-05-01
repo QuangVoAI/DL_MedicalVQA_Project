@@ -471,6 +471,7 @@ def evaluate_multimodal_vqa(
     beam_width_open=None,
     max_new_tokens_closed=None,
     max_new_tokens_open=None,
+    generation_batch_size=None,
 ):
     """
     B1 Zero-Shot evaluation & B2/DPO Fine-Tuned evaluation.
@@ -495,6 +496,7 @@ def evaluate_multimodal_vqa(
     beam_width_open = beam_width if beam_width_open is None else beam_width_open
     max_new_tokens_closed = 4 if max_new_tokens_closed is None else max_new_tokens_closed
     max_new_tokens_open = (max_words + 6) if max_new_tokens_open is None else max_new_tokens_open
+    generation_batch_size = 1 if generation_batch_size is None else max(1, int(generation_batch_size))
     bad_words_ids = _build_bad_words_ids(processor, variant)
 
     with torch.no_grad():
@@ -521,30 +523,43 @@ def evaluate_multimodal_vqa(
             def _run_generation(sample_indices, num_beams, max_new_tokens):
                 if not sample_indices:
                     return []
-                text_subset = [prompts[i] for i in sample_indices]
-                image_subset = [raw_images[i] for i in sample_indices] if raw_images is not None else None
-                if image_subset is not None:
-                    inputs = processor(
-                        text=text_subset,
-                        images=image_subset,
-                        return_tensors="pt",
-                        padding=True,
-                    ).to(device)
-                    if "pixel_values" in inputs:
-                        inputs["pixel_values"] = inputs["pixel_values"].to(torch.bfloat16)
-                else:
-                    inputs = processor(text=text_subset, return_tensors="pt", padding=True).to(device)
+                decoded_outputs = []
+                chunk_size = generation_batch_size if num_beams > 1 else max(generation_batch_size, 2)
 
-                output_ids = model.generate(
-                    **inputs,
-                    max_new_tokens=max_new_tokens,
-                    do_sample=False,
-                    num_beams=num_beams,
-                    early_stopping=num_beams > 1,
-                    bad_words_ids=bad_words_ids,
-                )
-                input_token_len = inputs.input_ids.shape[1]
-                return processor.batch_decode(output_ids[:, input_token_len:], skip_special_tokens=True)
+                for start in range(0, len(sample_indices), chunk_size):
+                    chunk_indices = sample_indices[start:start + chunk_size]
+                    text_subset = [prompts[i] for i in chunk_indices]
+                    image_subset = [raw_images[i] for i in chunk_indices] if raw_images is not None else None
+                    if image_subset is not None:
+                        inputs = processor(
+                            text=text_subset,
+                            images=image_subset,
+                            return_tensors="pt",
+                            padding=True,
+                        ).to(device)
+                        if "pixel_values" in inputs:
+                            inputs["pixel_values"] = inputs["pixel_values"].to(torch.bfloat16)
+                    else:
+                        inputs = processor(text=text_subset, return_tensors="pt", padding=True).to(device)
+
+                    output_ids = model.generate(
+                        **inputs,
+                        max_new_tokens=max_new_tokens,
+                        do_sample=False,
+                        num_beams=num_beams,
+                        early_stopping=num_beams > 1,
+                        bad_words_ids=bad_words_ids,
+                    )
+                    input_token_len = inputs.input_ids.shape[1]
+                    decoded_outputs.extend(
+                        processor.batch_decode(output_ids[:, input_token_len:], skip_special_tokens=True)
+                    )
+
+                    del inputs, output_ids
+                    if device.type == "cuda":
+                        torch.cuda.empty_cache()
+
+                return decoded_outputs
 
             if variant == 'B1':
                 generated = _run_generation(list(range(len(prompts))), beam_width_open, max_new_tokens_open)

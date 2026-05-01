@@ -529,6 +529,7 @@ def train(args):
             beam_width_open=config['eval'].get('beam_width_b_open', config['eval'].get('beam_width_b', 1)),
             max_new_tokens_closed=config['eval'].get('max_new_tokens_b_closed', 4),
             max_new_tokens_open=config['eval'].get('max_new_tokens_b_open', answer_max_words + 6),
+            generation_batch_size=config['eval'].get('generation_batch_size_b', 1),
             max_words=answer_max_words,
             variant='DPO'
         )
@@ -713,6 +714,7 @@ def train(args):
             beam_width_open=config['eval'].get('beam_width_b_open', config['eval'].get('beam_width_b', 1)),
             max_new_tokens_closed=config['eval'].get('max_new_tokens_b_closed', 4),
             max_new_tokens_open=config['eval'].get('max_new_tokens_b_open', answer_max_words + 6),
+            generation_batch_size=config['eval'].get('generation_batch_size_b', 1),
             max_words=answer_max_words,
             variant='B2'
         )
@@ -790,6 +792,7 @@ def train(args):
             beam_width_open=config['eval'].get('beam_width_b_open', beam_width),
             max_new_tokens_closed=config['eval'].get('max_new_tokens_b_closed', 4),
             max_new_tokens_open=config['eval'].get('max_new_tokens_b_open', answer_max_words + 6),
+            generation_batch_size=config['eval'].get('generation_batch_size_b', 1),
             max_words=answer_max_words,
             variant='B1'
         )
