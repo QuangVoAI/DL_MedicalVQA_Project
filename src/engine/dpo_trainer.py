@@ -4,7 +4,99 @@ from tqdm import tqdm
 import json
 import os
 
-from src.utils.text_utils import get_target_answer
+from src.utils.text_utils import get_target_answer, normalize_answer
+
+_VI_TO_EN_ANSWER_MAP = {
+    "có": "yes",
+    "không": "no",
+    "bình thường": "normal",
+    "bất thường": "abnormal",
+    "gan": "liver",
+    "phổi": "lung",
+    "tim": "heart",
+    "não": "brain",
+    "thận": "kidney",
+    "bàng quang": "bladder",
+    "lách": "spleen",
+    "phía trên bên trái": "upper left",
+    "phía trên bên phải": "upper right",
+    "phía dưới bên trái": "lower left",
+    "phía dưới bên phải": "lower right",
+}
+
+
+def _is_closed_question(question: str, answer: str) -> bool:
+    q = normalize_answer(question)
+    a = normalize_answer(answer)
+    return (
+        a in {"có", "không"}
+        or q.endswith(" không")
+        or " bình thường " in f" {q} "
+        or " có " in f" {q} "
+    )
+
+
+def _englishify_answer(question: str, answer: str) -> str:
+    q = normalize_answer(question)
+    a = normalize_answer(answer)
+    translated = a
+    for vi, en in sorted(_VI_TO_EN_ANSWER_MAP.items(), key=lambda item: -len(item[0])):
+        translated = translated.replace(vi, en)
+
+    if _is_closed_question(question, answer):
+        if a == "có":
+            if "bình thường" in q:
+                return "Yes, the image appears normal."
+            return "Yes, the finding is present."
+        if a == "không":
+            if "bình thường" in q:
+                return "No, the image is not normal."
+            return "No, the finding is absent."
+
+    if any(term in q for term in ["ở đâu", "vi tri", "where"]):
+        return f"The structure is located at {translated}."
+    return f"The answer is {translated}."
+
+
+def _flip_closed_answer(answer: str) -> str:
+    a = normalize_answer(answer)
+    if a == "có":
+        return "không"
+    if a == "không":
+        return "có"
+    return a
+
+
+def _build_rejected_candidates(data: list[dict], idx: int, chosen: str) -> list[str]:
+    item = data[idx]
+    question = item.get("question_vi", item.get("question", ""))
+    candidates = []
+
+    english_verbose = _englishify_answer(question, chosen)
+    if english_verbose:
+        candidates.append(english_verbose)
+
+    if _is_closed_question(question, chosen):
+        flipped = _flip_closed_answer(chosen)
+        if flipped and flipped != normalize_answer(chosen):
+            candidates.append(flipped)
+            candidates.append(_englishify_answer(question, flipped))
+    else:
+        next_answer = get_target_answer(data[(idx + 1) % len(data)], max_words=10)
+        if next_answer and normalize_answer(next_answer) != normalize_answer(chosen):
+            candidates.append(next_answer)
+        candidates.append(f"{question} {chosen}")
+
+    deduped = []
+    chosen_norm = normalize_answer(chosen)
+    seen = set()
+    for candidate in candidates:
+        candidate_norm = normalize_answer(candidate)
+        if not candidate_norm or candidate_norm == chosen_norm or candidate_norm in seen:
+            continue
+        seen.add(candidate_norm)
+        deduped.append(candidate)
+    return deduped
 
 def create_preference_data(vqa_json_path, output_path, num_pairs=200):
     """
@@ -15,23 +107,23 @@ def create_preference_data(vqa_json_path, output_path, num_pairs=200):
         data = json.load(f)
     
     pref_data = []
-    # Giả định: Ta chọn ngẫu nhiên một số mẫu và tạo câu trả lời sai (rejected)
-    # Trong thực tế, bước này nên dùng LLM hoặc chuyên gia để tạo câu trả lời sai có tính thuyết phục.
-    for i in range(min(num_pairs, len(data))):
+    for i in range(len(data)):
         item = data[i]
-        # Chosen: Câu trả lời đúng từ ground truth
         chosen = get_target_answer(item, max_words=10)
-        
-        # Rejected: Câu trả lời sai (giả lập bằng cách lấy câu trả lời của câu khác hoặc sửa đổi)
-        # Ở đây ta lấy câu trả lời của mẫu tiếp theo làm ví dụ
-        rejected = get_target_answer(data[(i + 1) % len(data)], max_words=10)
-        
-        pref_data.append({
-            "image": item.get("image_name") or item.get("image"),
-            "question": item["question_vi"],
-            "chosen": chosen,
-            "rejected": rejected
-        })
+        rejected_candidates = _build_rejected_candidates(data, i, chosen)
+
+        for rejected in rejected_candidates:
+            pref_data.append({
+                "image": item.get("image_name") or item.get("image"),
+                "source_idx": i,
+                "question": item["question_vi"],
+                "chosen": chosen,
+                "rejected": rejected
+            })
+            if len(pref_data) >= num_pairs:
+                break
+        if len(pref_data) >= num_pairs:
+            break
         
     with open(output_path, 'w', encoding='utf-8') as f:
         json.dump(pref_data, f, ensure_ascii=False, indent=2)

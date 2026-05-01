@@ -105,7 +105,11 @@ train:
 # ── Evaluation ──
 eval:
   beam_width_a: 5                     # Dành cho Hướng A (Nhanh & Chất lượng)
-  beam_width_b: 1                     # Dành cho Hướng B (Để tránh chạy 5 tiếng)
+  beam_width_b: 5                     # Dùng cho open-ended của Hướng B khi cần so công bằng với Hướng A
+  beam_width_b_closed: 1              # Closed questions của Hướng B không cần beam lớn
+  beam_width_b_open: 5                # Open questions của Hướng B dùng beam lớn hơn để tăng semantic match
+  max_new_tokens_b_closed: 4          # Giữ câu đóng rất ngắn
+  max_new_tokens_b_open: 16           # Đủ biên cho postprocess cắt về <=10 từ
   metrics: ["vqa_accuracy", "bleu", "rouge_l", "meteor", "bertscore"]
   llm_judge: true
   llm_judge_model: "gemini-1.5-flash" # API model for LLM-as-a-judge

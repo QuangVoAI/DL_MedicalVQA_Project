@@ -24,6 +24,7 @@ if not hasattr(fsdp, "FSDPModule"):
 import csv
 import json
 from datetime import datetime
+from PIL import Image
 
 from datasets import load_dataset
 # Import các thành phần từ thư mục src
@@ -31,7 +32,7 @@ from src.models.medical_vqa_model import MedicalVQAModelA
 from src.models.multimodal_vqa import MultimodalVQA
 from src.utils.visualization import MedicalImageTransform as MedicalTransform
 from src.data.medical_dataset import MedicalVQADataset
-from src.utils.text_utils import get_target_answer
+from src.utils.text_utils import get_target_answer, normalize_answer, postprocess_answer
 
 
 def build_training_arguments(training_arguments_cls, **kwargs):
@@ -96,6 +97,57 @@ def save_history_records(history_dir, records):
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
             writer.writerows(flat_rows)
+
+
+def build_dpo_instruction_prompt(question: str) -> str:
+    question = str(question or "").strip()
+    instruction = (
+        "Chi tra loi bang tieng Viet. "
+        "Khong dung tieng Anh. "
+        "Khong lap lai cau hoi. "
+        "Khong mo ta hinh anh chung chung. "
+        "Chi tra loi truc tiep dap an, toi da 10 tu."
+    )
+    return f"USER: <image>\n{question}\n{instruction} ASSISTANT:"
+
+
+def sanitize_dpo_completion(question: str, answer: str, max_words: int = 10) -> str:
+    question_norm = normalize_answer(question)
+    answer_norm = postprocess_answer(answer, max_words=max_words)
+
+    if answer_norm in {"yes", "có"}:
+        return "có"
+    if answer_norm in {"no", "không"}:
+        return "không"
+
+    is_closed = any(
+        pattern in question_norm
+        for pattern in ["bình thường", "bat thuong", "normal", "abnormal"]
+    ) or question_norm.endswith(" không") or " có " in f" {question_norm} "
+
+    if is_closed:
+        if any(token in answer_norm for token in ["không", "no", "not normal", "abnormal"]):
+            return "không"
+        if any(token in answer_norm for token in ["có", "yes", "bình thường", "normal", "present", "detected"]):
+            return "có"
+
+    return answer_norm
+
+
+def resolve_dpo_image(item: dict, hf_train_data=None, image_dir: str | None = None):
+    source_idx = item.get("source_idx")
+    if hf_train_data is not None and source_idx is not None and 0 <= int(source_idx) < len(hf_train_data):
+        img = hf_train_data[int(source_idx)].get("image")
+        if img is not None and getattr(img, "mode", None) != "RGB":
+            img = img.convert("RGB")
+        return img
+
+    image_name = item.get("image")
+    if image_name and image_dir:
+        img_path = os.path.join(image_dir, image_name)
+        if os.path.exists(img_path):
+            return Image.open(img_path).convert("RGB")
+    return None
 
 def train(args):
     # 1. Load Cấu hình
@@ -360,7 +412,8 @@ def train(args):
             from src.engine.dpo_trainer import create_preference_data
             if hf_repo:
                 raw_data = [{"question_vi": item["question_vi"], "answer_vi": get_target_answer(item, max_words=answer_max_words), 
-                             "image_name": item.get("image_name", f"img_{i}.png")} 
+                             "image_name": item.get("image_name"),
+                             "source_idx": i} 
                             for i, item in enumerate(dataset_dict['train'])]
                 tmp_json = "data/tmp_train_for_dpo.json"
                 os.makedirs("data", exist_ok=True)
@@ -373,19 +426,54 @@ def train(args):
         # Đọc file JSON preference data
         with open(pref_json, 'r', encoding='utf-8') as f:
             pref_data = json.load(f)
+
+        if hf_repo and any("source_idx" not in item for item in pref_data):
+            print("[INFO] Preference data cu khong co source_idx. Dang tao lai de giu lien ket image cho DPO...")
+            from src.engine.dpo_trainer import create_preference_data
+            raw_data = [{"question_vi": item["question_vi"], "answer_vi": get_target_answer(item, max_words=answer_max_words),
+                         "image_name": item.get("image_name"), "source_idx": i}
+                        for i, item in enumerate(dataset_dict['train'])]
+            tmp_json = "data/tmp_train_for_dpo.json"
+            with open(tmp_json, 'w', encoding='utf-8') as f:
+                json.dump(raw_data, f, ensure_ascii=False, indent=2)
+            create_preference_data(tmp_json, pref_json, num_pairs=200)
+            with open(pref_json, 'r', encoding='utf-8') as f:
+                pref_data = json.load(f)
             
         # Chuẩn bị HF Dataset cho DPOTrainer (yêu cầu cột: prompt, chosen, rejected)
-        prompts, chosens, rejecteds = [], [], []
+        prompts, chosens, rejecteds, images = [], [], [], []
+        eos = processor.tokenizer.eos_token or ""
+        filtered_pairs = 0
         for item in pref_data:
             q = item.get("question", "")
-            prompts.append(wrapper.build_instruction_prompt(q, language="vi", include_answer=False))
-            chosens.append(f" {item.get('chosen', '')}")
-            rejecteds.append(f" {item.get('rejected', '')}")
-            
+            chosen = sanitize_dpo_completion(q, item.get("chosen", ""), max_words=answer_max_words)
+            rejected = sanitize_dpo_completion(q, item.get("rejected", ""), max_words=answer_max_words)
+            image = resolve_dpo_image(
+                item,
+                hf_train_data=dataset_dict['train'] if hf_repo else None,
+                image_dir=config['data'].get('image_dir'),
+            )
+
+            if not chosen or not rejected or chosen == rejected or image is None:
+                filtered_pairs += 1
+                continue
+
+            prompts.append(build_dpo_instruction_prompt(q))
+            chosens.append(f" {chosen}{eos}")
+            rejecteds.append(f" {rejected}{eos}")
+            images.append(image)
+
+        if not prompts:
+            raise ValueError("Khong con cap preference hop le sau khi sanitize DPO data.")
+        if filtered_pairs:
+            print(f"[INFO] Da bo qua {filtered_pairs} cap preference khong hop le sau sanitize.")
+
         dpo_hf_dataset = HFDataset.from_dict({
             "prompt": prompts,
             "chosen": chosens,
-            "rejected": rejecteds
+            "rejected": rejecteds,
+            "image": images,
+            "images": images,
         })
         
         training_args_dict = {
@@ -437,6 +525,10 @@ def train(args):
             device, 
             processor, 
             beam_width=config['eval'].get('beam_width_b', 1),
+            beam_width_closed=config['eval'].get('beam_width_b_closed', 1),
+            beam_width_open=config['eval'].get('beam_width_b_open', config['eval'].get('beam_width_b', 1)),
+            max_new_tokens_closed=config['eval'].get('max_new_tokens_b_closed', 4),
+            max_new_tokens_open=config['eval'].get('max_new_tokens_b_open', answer_max_words + 6),
             max_words=answer_max_words,
             variant='DPO'
         )
@@ -617,6 +709,10 @@ def train(args):
             device, 
             processor, 
             beam_width=config['eval'].get('beam_width_b', 1),
+            beam_width_closed=config['eval'].get('beam_width_b_closed', 1),
+            beam_width_open=config['eval'].get('beam_width_b_open', config['eval'].get('beam_width_b', 1)),
+            max_new_tokens_closed=config['eval'].get('max_new_tokens_b_closed', 4),
+            max_new_tokens_open=config['eval'].get('max_new_tokens_b_open', answer_max_words + 6),
             max_words=answer_max_words,
             variant='B2'
         )
@@ -690,6 +786,10 @@ def train(args):
             device, 
             processor, 
             beam_width=beam_width,
+            beam_width_closed=config['eval'].get('beam_width_b_closed', beam_width),
+            beam_width_open=config['eval'].get('beam_width_b_open', beam_width),
+            max_new_tokens_closed=config['eval'].get('max_new_tokens_b_closed', 4),
+            max_new_tokens_open=config['eval'].get('max_new_tokens_b_open', answer_max_words + 6),
             max_words=answer_max_words,
             variant='B1'
         )
