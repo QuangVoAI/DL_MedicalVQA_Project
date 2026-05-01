@@ -541,8 +541,6 @@ def train(args):
                     images=images,
                     return_tensors="pt",
                     padding=True,
-                    truncation=True,
-                    max_length=self.max_length,
                 )
                 labels = batch["input_ids"].clone()
                 labels[labels == self.tokenizer.pad_token_id] = -100
@@ -555,8 +553,6 @@ def train(args):
                     images=images,
                     return_tensors="pt",
                     padding=True,
-                    truncation=True,
-                    max_length=self.max_length,
                 )
                 prompt_lengths = prompt_batch["attention_mask"].sum(dim=1)
                 for i, prompt_len in enumerate(prompt_lengths.tolist()):
