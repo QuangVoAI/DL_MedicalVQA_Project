@@ -21,6 +21,14 @@ def _normalize_closed_answer(question_vi: str, question_en: str, pred_vi: str, p
     )
 
     if is_normality_question:
+        explicit_negative_patterns = [
+            "không bình thường",
+            "not normal",
+        ]
+        explicit_positive_patterns = [
+            "có",
+            "yes",
+        ]
         positive_patterns = [
             "bình thường",
             "normal",
@@ -41,6 +49,14 @@ def _normalize_closed_answer(question_vi: str, question_en: str, pred_vi: str, p
             "effusion",
             "pneumothorax",
         ]
+        if any(pattern in combined for pattern in explicit_negative_patterns):
+            return "không"
+        if any(pattern in combined.split() for pattern in explicit_positive_patterns):
+            return "có"
+        if any(pattern in combined for pattern in positive_patterns):
+            return "có"
+        if any(pattern in combined for pattern in negative_patterns):
+            return "không"
     else:
         positive_patterns = [
             "có",
@@ -57,11 +73,12 @@ def _normalize_closed_answer(question_vi: str, question_en: str, pred_vi: str, p
             "negative",
             "none",
         ]
-
-    if any(pattern in combined for pattern in positive_patterns):
-        return "có"
-    if any(pattern in combined for pattern in negative_patterns):
-        return "không"
+        # For presence/absence questions, "không có ..." contains "có" but
+        # semantically means no. Check negation before positive cues.
+        if any(pattern in combined for pattern in negative_patterns):
+            return "không"
+        if any(pattern in combined for pattern in positive_patterns):
+            return "có"
 
     fallback_positive_patterns = [
         "bình thường",
@@ -154,7 +171,9 @@ def evaluate_vqa(model, dataloader, device, tokenizer, beam_width=1, max_len=32,
     model.eval()
     all_preds = []
     all_preds_raw = []
+    all_preds_display = []
     all_refs = []
+    all_refs_full = []
     all_is_closed = []
     
     with torch.no_grad():
@@ -202,6 +221,7 @@ def evaluate_vqa(model, dataloader, device, tokenizer, beam_width=1, max_len=32,
             
             all_preds.extend([normalize_for_metric(p) for p in preds_text])
             all_preds_raw.extend([normalize_for_metric(p) for p in preds_text_raw])
+            all_preds_display.extend([normalize_for_metric(p) for p in preds_text_raw])
             # [CRITICAL FIX] Dùng đáp án Tiếng Việt để chấm điểm
             all_refs.extend([normalize_for_metric(postprocess_answer(r, max_words=max_words)) for r in batch['raw_answer']])
             all_refs_full.extend([normalize_for_metric(postprocess_answer(r, max_words=100)) for r in batch.get('raw_answer_full', batch['raw_answer'])])
@@ -215,6 +235,7 @@ def evaluate_vqa(model, dataloader, device, tokenizer, beam_width=1, max_len=32,
     metrics.update(_compute_format_stats(all_preds, max_words=max_words))
     metrics['predictions'] = all_preds
     metrics['predictions_raw'] = all_preds_raw
+    metrics['predictions_display'] = all_preds_display
     metrics['ground_truths'] = all_refs
     
     closed_preds = [p for p, c in zip(all_preds, all_is_closed) if c]
@@ -226,6 +247,12 @@ def evaluate_vqa(model, dataloader, device, tokenizer, beam_width=1, max_len=32,
         metrics['closed']["bert_score"] = compute_bertscore(closed_preds_raw, closed_refs)
         metrics['closed'] = _attach_metric_views(metrics['closed'])
         metrics['closed'].update(_compute_format_stats(closed_preds, max_words=max_words))
+        metrics['closed_eval'] = {
+            "accuracy": metrics['closed'].get("accuracy_normalized", 0.0),
+            "em": metrics['closed'].get("em_normalized", 0.0),
+            "f1": metrics['closed'].get("f1_normalized", 0.0),
+            "count": len(closed_preds),
+        }
     open_preds = [p for p, c in zip(all_preds, all_is_closed) if not c]
     open_refs = [r for r, c in zip(all_refs, all_is_closed) if not c]
     open_preds_raw = [p for p, c in zip(all_preds_raw, all_is_closed) if not c]
@@ -235,6 +262,13 @@ def evaluate_vqa(model, dataloader, device, tokenizer, beam_width=1, max_len=32,
         metrics['open']["bert_score"] = compute_bertscore(open_preds_raw, open_refs)
         metrics['open'] = _attach_metric_views(metrics['open'])
         metrics['open'].update(_compute_format_stats(open_preds, max_words=max_words))
+        metrics['open_eval'] = {
+            "semantic": metrics['open'].get("semantic_raw", 0.0),
+            "bert_score": metrics['open'].get("bert_score_raw", 0.0),
+            "f1": metrics['open'].get("f1_normalized", 0.0),
+            "rouge_l": metrics['open'].get("rouge_l_normalized", 0.0),
+            "count": len(open_preds),
+        }
         
     metrics['long_answers_eval'] = {
         "accuracy": batch_metrics(all_preds, all_refs_full).get("accuracy_normalized", 0),
@@ -402,6 +436,7 @@ def evaluate_multimodal_vqa(model, dataloader, device, processor, beam_width=1, 
     model.eval()
     all_preds     = []
     all_preds_raw = []
+    all_preds_display = []
     all_preds_en  = []
     all_refs      = []
     all_refs_full = []
@@ -455,6 +490,7 @@ def evaluate_multimodal_vqa(model, dataloader, device, processor, beam_width=1, 
             )
 
             preds_vi = []
+            preds_vi_display = []
             preds_en_clean = []
             
             if variant == 'B1':
@@ -490,14 +526,25 @@ def evaluate_multimodal_vqa(model, dataloader, device, processor, beam_width=1, 
                         translated = [translated]
                     for idx, vi in zip(needs_translate_idx, translated):
                         preds_vi[idx] = postprocess_answer(vi, max_words=max_words)
+                preds_vi_display = list(preds_vi)
             else:
                 # B2 & DPO directly outputs Vietnamese, no translation needed
-                preds_vi = preds_raw
+                preds_vi_display = [postprocess_answer(p, max_words=max_words) if p else "" for p in preds_raw]
+                for i, pred_vi in enumerate(preds_raw):
+                    if labels[i].item() != -1:
+                        preds_vi.append(
+                            _normalize_closed_answer(
+                                questions_vi[i], questions_en[i] if i < len(questions_en) else "", pred_vi
+                            )
+                        )
+                    else:
+                        preds_vi.append(pred_vi)
                 preds_en_clean = [""] * len(preds_raw)
 
             # Đảm bảo không có None
             preds_vi = [postprocess_answer(p, max_words=max_words) if p else "" for p in preds_vi]
-            preds_vi_raw = list(preds_vi)
+            preds_vi_display = [postprocess_answer(p, max_words=max_words) if p else "" for p in preds_vi_display]
+            preds_vi_raw = list(preds_vi_display)
 
             # Refs
             refs_vi  = [postprocess_answer(r, max_words=max_words) for r in refs_vi_raw]
@@ -515,12 +562,14 @@ def evaluate_multimodal_vqa(model, dataloader, device, processor, beam_width=1, 
                     else:
                         print(f"[{q_type}] Q (Vi): {questions_vi[i]}")
                         print(f"  Pred (Vi raw):   '{preds_raw[i]}'")
+                    print(f"  Pred display:    '{preds_vi_display[i]}'")
                     print(f"  Pred (Vi):       '{preds_vi[i]}'")
                     print(f"  GT (Vi): '{refs_vi[i]}'  |  GT (En): '{refs_en[i]}'")
                 print("-----------------------------------------\n")
 
             all_preds.extend([normalize_for_metric(p) for p in preds_vi])
             all_preds_raw.extend([normalize_for_metric(p) for p in preds_vi_raw])
+            all_preds_display.extend([normalize_for_metric(p) for p in preds_vi_display])
             all_preds_en.extend([normalize_for_metric(p) for p in preds_en_clean])
             all_refs.extend([normalize_for_metric(r) for r in refs_vi])
             all_refs_full.extend([normalize_for_metric(postprocess_answer(r, max_words=100)) for r in batch.get('raw_answer_full', batch['raw_answer'])])
@@ -548,6 +597,7 @@ def evaluate_multimodal_vqa(model, dataloader, device, processor, beam_width=1, 
     metrics.update(_compute_format_stats(all_preds, max_words=max_words))
     metrics['predictions']      = all_preds
     metrics['predictions_raw']  = all_preds_raw
+    metrics['predictions_display'] = all_preds_display
     metrics['predictions_en']   = all_preds_en
     metrics['ground_truths']    = all_refs
     metrics['ground_truths_en'] = all_refs_en
@@ -569,12 +619,25 @@ def evaluate_multimodal_vqa(model, dataloader, device, processor, beam_width=1, 
             [all_refs[i]      for i in closed_idx],
             [all_preds_raw[i] for i in closed_idx],
         )
+        metrics['closed_eval'] = {
+            "accuracy": metrics['closed'].get("accuracy_normalized", 0.0),
+            "em": metrics['closed'].get("em_normalized", 0.0),
+            "f1": metrics['closed'].get("f1_normalized", 0.0),
+            "count": len(closed_idx),
+        }
     if open_idx:
         metrics['open'] = _subset(
             [all_preds[i]     for i in open_idx],
             [all_refs[i]      for i in open_idx],
             [all_preds_raw[i] for i in open_idx],
         )
+        metrics['open_eval'] = {
+            "semantic": metrics['open'].get("semantic_raw", 0.0),
+            "bert_score": metrics['open'].get("bert_score_raw", 0.0),
+            "f1": metrics['open'].get("f1_normalized", 0.0),
+            "rouge_l": metrics['open'].get("rouge_l_normalized", 0.0),
+            "count": len(open_idx),
+        }
         
     metrics['long_answers_eval'] = {
         "accuracy": batch_metrics(all_preds, all_refs_full).get("accuracy_normalized", 0),
@@ -585,4 +648,3 @@ def evaluate_multimodal_vqa(model, dataloader, device, processor, beam_width=1, 
     }
 
     return metrics
-

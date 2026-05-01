@@ -44,6 +44,13 @@ METRICS_LABELS = {
     "val_bleu4_normalized":    "BLEU-4",
     "val_bert_score_raw":      "BERTScore",
     "val_semantic_raw":        "Semantic Score",
+    "val_closed_accuracy":     "Closed Accuracy",
+    "val_closed_em":           "Closed EM",
+    "val_closed_f1":           "Closed F1",
+    "val_open_semantic":       "Open Semantic",
+    "val_open_bertscore":      "Open BERTScore",
+    "val_open_f1":             "Open F1",
+    "val_open_rouge_l":        "Open ROUGE-L",
     "train_loss":              "Train Loss",
 }
 
@@ -82,6 +89,15 @@ def find_latest_history(log_dir: str, variant: str) -> dict | None:
 
 def extract_series(records: list, key: str) -> tuple[list, list]:
     """Trích xuất (epochs, values) từ list records."""
+    nested_metric_map = {
+        "val_closed_accuracy": ("closed", "accuracy_normalized", "accuracy"),
+        "val_closed_em":       ("closed", "em_normalized", "em"),
+        "val_closed_f1":       ("closed", "f1_normalized", "f1"),
+        "val_open_semantic":   ("open", "semantic_raw", "semantic"),
+        "val_open_bertscore":  ("open", "bert_score_raw", "bert_score"),
+        "val_open_f1":         ("open", "f1_normalized", "f1"),
+        "val_open_rouge_l":    ("open", "rouge_l_normalized", "rouge_l"),
+    }
     epochs, values = [], []
     for r in records:
         # Hỗ trợ cả HuggingFace log format (có 'epoch' float) và MedicalVQATrainer format
@@ -97,12 +113,23 @@ def extract_series(records: list, key: str) -> tuple[list, list]:
                 "val_bleu4_normalized":    ["eval_bleu4", "eval_bleu"],
                 "val_bert_score_raw":      ["eval_bertscore", "eval_bert_score"],
                 "val_semantic_raw":        ["eval_semantic"],
+                "val_closed_accuracy":     ["eval_closed_accuracy"],
+                "val_closed_em":           ["eval_closed_em"],
+                "val_closed_f1":           ["eval_closed_f1"],
+                "val_open_semantic":       ["eval_open_semantic"],
+                "val_open_bertscore":      ["eval_open_bertscore"],
+                "val_open_f1":             ["eval_open_f1"],
+                "val_open_rouge_l":        ["eval_open_rouge_l"],
                 "train_loss":              ["loss", "train/loss"],
             }
             for alias in aliases.get(key, []):
                 val = r.get(alias)
                 if val is not None:
                     break
+        if val is None and key in nested_metric_map:
+            split_key, primary_key, fallback_key = nested_metric_map[key]
+            split_metrics = r.get("metrics", {}).get(split_key, {})
+            val = split_metrics.get(primary_key, split_metrics.get(fallback_key))
         if val is not None:
             epochs.append(float(epoch))
             values.append(float(val))
@@ -293,6 +320,38 @@ def print_summary_table(all_data: dict):
     print("═" * (8 + 12 * len(metric_short)) + "\n")
 
 
+def print_split_summary_table(all_data: dict):
+    """In bảng tóm tắt theo protocol closed/open."""
+    metric_keys = [
+        "val_closed_accuracy",
+        "val_closed_em",
+        "val_closed_f1",
+        "val_open_semantic",
+        "val_open_bertscore",
+    ]
+    metric_short = ["Closed Acc", "Closed EM", "Closed F1", "Open Sem", "Open BERT"]
+
+    header = f"{'Model':<8}" + "".join(f"{m:>12}" for m in metric_short)
+    print("\n" + "═" * (8 + 12 * len(metric_short)))
+    print("  📊  SPLIT EVALUATION — CLOSED VS OPEN")
+    print("═" * (8 + 12 * len(metric_short)))
+    print(f"  {header}")
+    print("─" * (8 + 12 * len(metric_short)))
+
+    for variant in VARIANTS:
+        info = all_data.get(variant)
+        if info is None:
+            print(f"  {variant:<8}" + "".join(f"{'N/A':>12}" for _ in metric_keys))
+            continue
+        row = f"  {variant:<8}"
+        for k in metric_keys:
+            best = get_best_metric(info["records"], k)
+            row += f"{best:>12.2%}" if best is not None else f"{'N/A':>12}"
+        print(row)
+
+    print("═" * (8 + 12 * len(metric_short)) + "\n")
+
+
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
@@ -336,9 +395,16 @@ def main():
     plot_final_bar(all_data, args.out)
     # 7. Radar chart
     plot_radar(all_data, args.out)
+    # 8. Protocol chấm riêng closed/open
+    plot_metric_curves(all_data, "val_closed_accuracy", args.out)
+    plot_metric_curves(all_data, "val_closed_em", args.out)
+    plot_metric_curves(all_data, "val_closed_f1", args.out)
+    plot_metric_curves(all_data, "val_open_semantic", args.out)
+    plot_metric_curves(all_data, "val_open_bertscore", args.out)
 
     # In bảng tóm tắt
     print_summary_table(all_data)
+    print_split_summary_table(all_data)
 
     print(f"[DONE] Tất cả biểu đồ đã lưu tại: {args.out}/")
     charts = glob.glob(os.path.join(args.out, "compare_*.png"))

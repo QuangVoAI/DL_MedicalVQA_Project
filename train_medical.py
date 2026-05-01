@@ -441,9 +441,21 @@ def train(args):
             variant='DPO'
         )
         
-        print(f"\n[RESULT DPO]")
-        print(f"Accuracy: {metrics.get('accuracy_normalized', 0):.4f}")
-        print(f"F1: {metrics.get('f1_normalized', 0):.4f}")
+        closed_eval = metrics.get('closed_eval', {})
+        open_eval = metrics.get('open_eval', {})
+
+        print(f"\n[RESULT DPO - CLOSED QUESTIONS]")
+        print(f"Count: {closed_eval.get('count', 0)}")
+        print(f"Accuracy: {closed_eval.get('accuracy', 0):.4f}")
+        print(f"EM: {closed_eval.get('em', 0):.4f}")
+        print(f"F1: {closed_eval.get('f1', 0):.4f}")
+
+        print(f"\n[RESULT DPO - OPEN QUESTIONS]")
+        print(f"Count: {open_eval.get('count', 0)}")
+        print(f"Semantic: {open_eval.get('semantic', 0):.4f}")
+        print(f"BERTScore: {open_eval.get('bert_score', 0):.4f}")
+        print(f"F1: {open_eval.get('f1', 0):.4f}")
+        print(f"ROUGE-L: {open_eval.get('rouge_l', 0):.4f}")
         
         final_epoch = training_args.num_train_epochs
         trainer.state.log_history.append({
@@ -452,7 +464,14 @@ def train(args):
             "val_f1_normalized": metrics.get('f1_normalized'),
             "val_bleu4_normalized": metrics.get('bleu4_normalized'),
             "val_bert_score_raw": metrics.get('bert_score_raw'),
-            "val_semantic_raw": metrics.get('semantic_raw')
+            "val_semantic_raw": metrics.get('semantic_raw'),
+            "val_closed_accuracy": closed_eval.get('accuracy', 0),
+            "val_closed_em": closed_eval.get('em', 0),
+            "val_closed_f1": closed_eval.get('f1', 0),
+            "val_open_semantic": open_eval.get('semantic', 0),
+            "val_open_bertscore": open_eval.get('bert_score', 0),
+            "val_open_f1": open_eval.get('f1', 0),
+            "val_open_rouge_l": open_eval.get('rouge_l', 0),
         })
         
         save_history_records(history_dir, trainer.state.log_history)
@@ -474,6 +493,8 @@ def train(args):
         model, processor = wrapper.load_model()
         
         def make_sft_dataset(raw_ds):
+            prompts = []
+            answers = []
             texts = []
             images = []
             for i in range(len(raw_ds)):
@@ -481,14 +502,22 @@ def train(args):
                 if isinstance(item, dict):
                     q = item.get("question_vi", item.get("question", item.get("raw_questions", "")))
                     a = get_target_answer(item, max_words=answer_max_words)
+                    answer_type = str(item.get("answer_type", "")).upper()
+                    label_closed = item.get("label_closed", None)
+                    if answer_type == "CLOSED" or label_closed in (0, 1) or a in {"có", "không", "yes", "no"}:
+                        a_norm = str(a).strip().lower()
+                        a = "không" if a_norm in {"không", "khong", "no", "false", "absent"} else "có"
                     prompt = wrapper.build_instruction_prompt(q, language="vi", include_answer=False)
-                    texts.append(f"{prompt} {a}")
+                    prompts.append(prompt)
+                    answers.append(a)
+                    eos = processor.tokenizer.eos_token or ""
+                    texts.append(f"{prompt} {a}{eos}")
                     
                     img = item.get("image", None)
                     if img is not None:
                         if img.mode != "RGB": img = img.convert("RGB")
                     images.append(img)
-            return HFDataset.from_dict({"text": texts, "image": images})
+            return HFDataset.from_dict({"prompt": prompts, "answer": answers, "text": texts, "image": images})
         
         if hf_repo:
             sft_train = make_sft_dataset(dataset_dict['train'])
@@ -504,6 +533,7 @@ def train(args):
                 self.max_length = max_length
             def __call__(self, examples):
                 texts = [example["text"] for example in examples]
+                prompts = [example["prompt"] for example in examples]
                 images = [example["image"] for example in examples]
 
                 batch = self.processor(
@@ -511,18 +541,27 @@ def train(args):
                     images=images,
                     return_tensors="pt",
                     padding=True,
+                    truncation=True,
+                    max_length=self.max_length,
                 )
                 labels = batch["input_ids"].clone()
                 labels[labels == self.tokenizer.pad_token_id] = -100
                 
-                # Mask prompt
-                sep_tokens = self.tokenizer.encode(" ASSISTANT:", add_special_tokens=False)
-                sep_token_id = sep_tokens[-1] if sep_tokens else None
-                if sep_token_id is not None:
-                    for i in range(len(labels)):
-                        sep_idx = (labels[i] == sep_token_id).nonzero(as_tuple=True)[0]
-                        if len(sep_idx) > 0:
-                            labels[i, :sep_idx[-1] + 1] = -100
+                # Mask the full prompt so SFT loss is computed only on the answer.
+                # Searching for "ASSISTANT:" token ids is brittle because tokenization can
+                # split the separator differently across models.
+                prompt_batch = self.processor(
+                    text=prompts,
+                    images=images,
+                    return_tensors="pt",
+                    padding=True,
+                    truncation=True,
+                    max_length=self.max_length,
+                )
+                prompt_lengths = prompt_batch["attention_mask"].sum(dim=1)
+                for i, prompt_len in enumerate(prompt_lengths.tolist()):
+                    token_positions = batch["attention_mask"][i].nonzero(as_tuple=True)[0]
+                    labels[i, token_positions[:prompt_len]] = -100
                 
                 batch["labels"] = labels
                 # Remove text and image lists as Trainer only wants tensors
@@ -586,9 +625,21 @@ def train(args):
             variant='B2'
         )
         
-        print(f"\n[RESULT B2 - SHORT METRICS]")
-        print(f"Accuracy: {metrics.get('accuracy_normalized', 0):.4f}")
-        print(f"F1: {metrics.get('f1_normalized', 0):.4f}")
+        closed_eval = metrics.get('closed_eval', {})
+        open_eval = metrics.get('open_eval', {})
+
+        print(f"\n[RESULT B2 - CLOSED QUESTIONS]")
+        print(f"Count: {closed_eval.get('count', 0)}")
+        print(f"Accuracy: {closed_eval.get('accuracy', 0):.4f}")
+        print(f"EM: {closed_eval.get('em', 0):.4f}")
+        print(f"F1: {closed_eval.get('f1', 0):.4f}")
+
+        print(f"\n[RESULT B2 - OPEN QUESTIONS]")
+        print(f"Count: {open_eval.get('count', 0)}")
+        print(f"Semantic: {open_eval.get('semantic', 0):.4f}")
+        print(f"BERTScore: {open_eval.get('bert_score', 0):.4f}")
+        print(f"F1: {open_eval.get('f1', 0):.4f}")
+        print(f"ROUGE-L: {open_eval.get('rouge_l', 0):.4f}")
         
         if 'long_answers_eval' in metrics:
             print(f"\n[RESULT B2 - LONG METRICS]")
@@ -614,7 +665,14 @@ def train(args):
             "val_f1_normalized": metrics.get('f1_normalized'),
             "val_bleu4_normalized": metrics.get('bleu4_normalized'),
             "val_bert_score_raw": metrics.get('bert_score_raw'),
-            "val_semantic_raw": metrics.get('semantic_raw')
+            "val_semantic_raw": metrics.get('semantic_raw'),
+            "val_closed_accuracy": closed_eval.get('accuracy', 0),
+            "val_closed_em": closed_eval.get('em', 0),
+            "val_closed_f1": closed_eval.get('f1', 0),
+            "val_open_semantic": open_eval.get('semantic', 0),
+            "val_open_bertscore": open_eval.get('bert_score', 0),
+            "val_open_f1": open_eval.get('f1', 0),
+            "val_open_rouge_l": open_eval.get('rouge_l', 0),
         })
         
         save_history_records(history_dir, trainer.state.log_history)
@@ -640,12 +698,21 @@ def train(args):
             variant='B1'
         )
         
-        print(f"\n[RESULT B1 - SHORT METRICS]")
-        print(f"Accuracy: {metrics.get('accuracy_normalized', metrics.get('accuracy', metrics.get('vqa_accuracy', 0))):.4f}")
-        print(f"F1: {metrics.get('f1_normalized', metrics.get('f1', 0)):.4f}")
-        print(f"BLEU-4: {metrics.get('bleu4_normalized', metrics.get('bleu4', 0)):.4f}")
-        print(f"BERTScore: {metrics.get('bert_score_raw', metrics.get('bert_score', 0)):.4f}")
-        print(f"Semantic Score: {metrics.get('semantic_raw', metrics.get('semantic', 0)):.4f}")
+        closed_eval = metrics.get('closed_eval', {})
+        open_eval = metrics.get('open_eval', {})
+
+        print(f"\n[RESULT B1 - CLOSED QUESTIONS]")
+        print(f"Count: {closed_eval.get('count', 0)}")
+        print(f"Accuracy: {closed_eval.get('accuracy', 0):.4f}")
+        print(f"EM: {closed_eval.get('em', 0):.4f}")
+        print(f"F1: {closed_eval.get('f1', 0):.4f}")
+
+        print(f"\n[RESULT B1 - OPEN QUESTIONS]")
+        print(f"Count: {open_eval.get('count', 0)}")
+        print(f"Semantic: {open_eval.get('semantic', 0):.4f}")
+        print(f"BERTScore: {open_eval.get('bert_score', 0):.4f}")
+        print(f"F1: {open_eval.get('f1', 0):.4f}")
+        print(f"ROUGE-L: {open_eval.get('rouge_l', 0):.4f}")
         
         if 'long_answers_eval' in metrics:
             print(f"\n[RESULT B1 - LONG METRICS]")
@@ -664,6 +731,13 @@ def train(args):
             "val_bleu4_normalized":    float(metrics.get('bleu4_normalized', metrics.get('bleu4', 0))),
             "val_bert_score_raw":      float(metrics.get('bert_score_raw', metrics.get('bert_score', 0))),
             "val_semantic_raw":        float(metrics.get('semantic_raw', metrics.get('semantic', 0))),
+            "val_closed_accuracy":     float(closed_eval.get('accuracy', 0)),
+            "val_closed_em":           float(closed_eval.get('em', 0)),
+            "val_closed_f1":           float(closed_eval.get('f1', 0)),
+            "val_open_semantic":       float(open_eval.get('semantic', 0)),
+            "val_open_bertscore":      float(open_eval.get('bert_score', 0)),
+            "val_open_f1":             float(open_eval.get('f1', 0)),
+            "val_open_rouge_l":        float(open_eval.get('rouge_l', 0)),
             "metrics": metrics,
         }])
         return

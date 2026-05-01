@@ -68,7 +68,7 @@ class MultimodalVQA:
         Prompt thống nhất cho zero-shot, SFT và demo.
         """
         if language == "vi":
-            instruction = "Tra loi bang thuat ngu y khoa chuan, ngan gon, toi da 10 tu."
+            instruction = "Chi tra loi bang tieng Viet, thuat ngu y khoa chuan, ngan gon, toi da 10 tu."
         else:
             instruction = "Answer with standard medical terminology, concise, at most 10 words."
         suffix = " ASSISTANT:" if not include_answer else ""

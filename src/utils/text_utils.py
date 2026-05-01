@@ -178,6 +178,14 @@ def clean_vqa_output(text: str) -> str:
         return ""
     text = re.sub(r"@@\s?", "", text)
     text = re.sub(r"##_?", "", text)
+    text = re.sub(r"^\s*yes\s*,?\s*", "có ", text, flags=re.IGNORECASE)
+    text = re.sub(r"^\s*no\s*,?\s*", "không ", text, flags=re.IGNORECASE)
+    text = re.sub(
+        r"^(có|không)\s+(the\s+)?(image|scan|x-ray|xray|mri|ct|picture|photo|radiograph)\s+(is|shows?|depicts?|demonstrates?|reveals?|indicates?|presents?)\s+",
+        r"\1 ",
+        text,
+        flags=re.IGNORECASE,
+    )
     text = re.sub(r"\b(answer|response|assistant|trả lời)\b\s*:?\s*$", "", text, flags=re.IGNORECASE)
     text = re.sub(r"\s+", " ", text).strip()
     return text

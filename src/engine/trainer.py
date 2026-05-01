@@ -253,6 +253,8 @@ class MedicalVQATrainer:
             metrics = self.val_epoch(tokenizer, epoch=epoch)
             
             val_acc = metrics.get('accuracy_normalized', metrics.get('accuracy', 0))
+            closed_eval = metrics.get("closed_eval", {})
+            open_eval = metrics.get("open_eval", {})
             is_best = val_acc > best_val_acc
             epoch_record = {
                 "epoch": epoch,
@@ -266,8 +268,14 @@ class MedicalVQATrainer:
                 "val_bert_score": float(metrics.get("bert_score", 0.0)),
                 "val_bert_score_raw": float(metrics.get("bert_score_raw", metrics.get("bert_score", 0.0))),
                 "val_semantic_raw": float(metrics.get("semantic_raw", metrics.get("semantic", 0.0))),
-                "val_closed_accuracy": float(metrics.get("closed", {}).get("accuracy", -1)),
+                "val_closed_accuracy": float(closed_eval.get("accuracy", metrics.get("closed", {}).get("accuracy", -1))),
+                "val_closed_em": float(closed_eval.get("em", metrics.get("closed", {}).get("em", -1))),
+                "val_closed_f1": float(closed_eval.get("f1", metrics.get("closed", {}).get("f1", -1))),
                 "val_open_accuracy": float(metrics.get("open", {}).get("accuracy", -1)),
+                "val_open_semantic": float(open_eval.get("semantic", metrics.get("open", {}).get("semantic", -1))),
+                "val_open_bertscore": float(open_eval.get("bert_score", metrics.get("open", {}).get("bert_score", -1))),
+                "val_open_f1": float(open_eval.get("f1", metrics.get("open", {}).get("f1", -1))),
+                "val_open_rouge_l": float(open_eval.get("rouge_l", metrics.get("open", {}).get("rouge_l", -1))),
                 "best_so_far": bool(is_best),
                 "metrics": metrics,
             }
