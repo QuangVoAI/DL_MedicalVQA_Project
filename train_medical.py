@@ -436,6 +436,14 @@ def train(args):
         b2_checkpoint = select_best_adapter_checkpoint(config['train'].get('b2_output_dir', './checkpoints/B2'))
         print(f"[INFO] DPO sẽ khởi tạo từ B2 checkpoint: {b2_checkpoint}")
         model, processor = wrapper.load_model(adapter_path=str(b2_checkpoint), is_trainable=True)
+        if not config['train'].get('dpo_train_mlp_lora', False):
+            frozen_lora = 0
+            for name, param in model.named_parameters():
+                if "lora_" in name and any(proj in name for proj in ("gate_proj", "up_proj", "down_proj")):
+                    param.requires_grad = False
+                    frozen_lora += param.numel()
+            print(f"[INFO] DPO đang freeze LoRA MLP để giảm VRAM: {frozen_lora:,} tham số")
+            model.print_trainable_parameters()
         
         # Tạo/Load Preference Data
         pref_json = config.get('dpo', {}).get('preference_data', 'data/preference_data_slake.json')

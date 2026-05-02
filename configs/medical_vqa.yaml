@@ -79,11 +79,12 @@ train:
   b2_optim: "paged_adamw_8bit"         # Optimizer tiết kiệm VRAM cho QLoRA
   b2_num_workers: 4                    # Vừa đủ cho multimodal collator, tránh overhead
   dpo_batch_size: 1                    # [OOM FIX] DPO trên GPU 24GB nên dùng micro-batch = 1
-  dpo_gradient_accumulation_steps: 8   # Effective batch = 8, an toàn hơn cho LLaVA-Med 7B
-  dpo_max_length: 128                  # [OOM FIX] Giới hạn tổng độ dài chuỗi cho DPOTrainer
-  dpo_max_prompt_length: 96            # [OOM FIX] Prompt ngắn hơn để giảm VRAM
-  dpo_max_completion_length: 24        # [OOM FIX] Completion rất ngắn vì đáp án chỉ vài từ
+  dpo_gradient_accumulation_steps: 16  # Peak VRAM không đổi, nhưng effective batch vẫn đủ ổn định
+  dpo_max_length: 64                   # [OOM FIX] Hạ trần token để giảm single-step memory
+  dpo_max_prompt_length: 48            # [OOM FIX] Prompt cho DPO ngắn, không cần dài như SFT
+  dpo_max_completion_length: 12        # [OOM FIX] Completion chỉ vài từ là đủ cho VQA
   dpo_optim: "paged_adamw_8bit"        # [OOM FIX] Optimizer tiết kiệm bộ nhớ
+  dpo_train_mlp_lora: false            # [OOM FIX] Chỉ train attention LoRA, freeze MLP LoRA để tránh OOM
   eval_batch_size: 16                 # [OPTIMIZED FOR 4090] Tăng tốc độ Evaluation
   learning_rate: 3.0e-4               # Cho Hướng A
   b2_lr: 2.0e-5                       # Cho B2 (SFT) - chuẩn cho LLaVA
