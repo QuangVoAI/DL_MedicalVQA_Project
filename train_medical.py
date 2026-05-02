@@ -900,7 +900,6 @@ def train(args):
         from transformers import TrainingArguments
         from datasets import Dataset as HFDataset
         import inspect
-        import json
         
         dpo_answer_max_words = int(config.get('dpo', {}).get('max_answer_words', min(answer_max_words, 6)))
         wrapper = MultimodalVQA(
