@@ -1,6 +1,6 @@
 import torch
 from transformers import LlavaProcessor, LlavaForConditionalGeneration, BitsAndBytesConfig
-from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
+from peft import LoraConfig, PeftModel, get_peft_model, prepare_model_for_kbit_training
 
 class MultimodalVQA:
     """
@@ -35,7 +35,7 @@ class MultimodalVQA:
             task_type="CAUSAL_LM"
         )
 
-    def load_model(self):
+    def load_model(self, adapter_path=None, is_trainable=True):
         print(f"[INFO] Đang tải LLaVA-Med-v1.5-7B với chế độ 4-bit...")
         processor = LlavaProcessor.from_pretrained(self.model_id)
         processor.tokenizer.padding_side = "left" # Bắt buộc cho decoder-only models
@@ -49,7 +49,11 @@ class MultimodalVQA:
 
         # Chuẩn bị mô hình cho PEFT
         model = prepare_model_for_kbit_training(model)
-        model = get_peft_model(model, self.peft_config)
+        if adapter_path:
+            print(f"[INFO] Đang nạp adapter LoRA từ: {adapter_path}")
+            model = PeftModel.from_pretrained(model, adapter_path, is_trainable=is_trainable)
+        else:
+            model = get_peft_model(model, self.peft_config)
         model.gradient_checkpointing_enable()
         model.enable_input_require_grads()
 

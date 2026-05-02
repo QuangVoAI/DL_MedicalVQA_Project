@@ -24,6 +24,7 @@ if not hasattr(fsdp, "FSDPModule"):
 import csv
 import json
 from datetime import datetime
+from pathlib import Path
 from PIL import Image
 
 from datasets import load_dataset
@@ -97,6 +98,35 @@ def save_history_records(history_dir, records):
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
             writer.writerows(flat_rows)
+
+
+def select_best_adapter_checkpoint(checkpoint_root: str):
+    checkpoint_root = Path(checkpoint_root)
+    if not checkpoint_root.exists():
+        raise FileNotFoundError(f"Không tìm thấy thư mục checkpoint: {checkpoint_root}")
+
+    checkpoint_dirs = sorted(
+        p for p in checkpoint_root.glob("checkpoint-*")
+        if (p / "adapter_config.json").exists()
+    )
+    if not checkpoint_dirs:
+        raise FileNotFoundError(f"Không có adapter checkpoint trong {checkpoint_root}")
+
+    for state_file in sorted(checkpoint_root.glob("checkpoint-*/trainer_state.json"), reverse=True):
+        try:
+            state = json.loads(state_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+
+        best_path = state.get("best_model_checkpoint")
+        if best_path:
+            best_dir = Path(best_path.replace("./", ""))
+            if not best_dir.is_absolute():
+                best_dir = Path.cwd() / best_dir
+            if (best_dir / "adapter_config.json").exists():
+                return best_dir.resolve()
+
+    return checkpoint_dirs[-1].resolve()
 
 
 def build_dpo_instruction_prompt(question: str) -> str:
@@ -403,7 +433,9 @@ def train(args):
             lora_dropout=float(config['model_b'].get('lora_dropout', 0.05)),
             lora_target_modules=config['model_b'].get('lora_target_modules'),
         )
-        model, processor = wrapper.load_model()
+        b2_checkpoint = select_best_adapter_checkpoint(config['train'].get('b2_output_dir', './checkpoints/B2'))
+        print(f"[INFO] DPO sẽ khởi tạo từ B2 checkpoint: {b2_checkpoint}")
+        model, processor = wrapper.load_model(adapter_path=str(b2_checkpoint), is_trainable=True)
         
         # Tạo/Load Preference Data
         pref_json = config.get('dpo', {}).get('preference_data', 'data/preference_data_slake.json')
@@ -485,7 +517,9 @@ def train(args):
             "warmup_ratio": 0.1,                 # [OPTIMIZED] Tránh sốc gradient ở epoch đầu
             "bf16": True,
             "remove_unused_columns": False,
-            "logging_steps": 10
+            "logging_steps": 10,
+            "save_strategy": "epoch",
+            "save_total_limit": 1,
         }
         
         if DPOConfig is not None:
@@ -513,8 +547,13 @@ def train(args):
         print("[INFO] Bắt đầu huấn luyện DPO...")
         trainer.train()
         os.makedirs("checkpoints", exist_ok=True)
-        torch.save(model.state_dict(), f"checkpoints/medical_vqa_dpo.pth")
-        
+        final_dpo_dir = Path("checkpoints/DPO/final_adapter")
+        final_dpo_dir.mkdir(parents=True, exist_ok=True)
+        model.save_pretrained(str(final_dpo_dir))
+        processor.save_pretrained(str(final_dpo_dir))
+        with open("checkpoints/medical_vqa_dpo_from.txt", "w", encoding="utf-8") as f:
+            f.write(str(b2_checkpoint))
+
         # [FIX] Đánh giá DPO sau khi train xong để có Accuracy, F1, BLEU cho biểu đồ so sánh
         from src.engine.medical_eval import evaluate_multimodal_vqa
         print("[INFO] Đang chạy đánh giá nghiệm thu trên tập Validation cho DPO...")
