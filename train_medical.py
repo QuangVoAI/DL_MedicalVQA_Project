@@ -514,8 +514,51 @@ def train(args):
             "chosen": chosens,
             "rejected": rejecteds,
             "image": images,
-            "images": images,
         })
+
+        class MultimodalDPODataCollator:
+            def __init__(self, processor, max_length=None):
+                self.processor = processor
+                self.tokenizer = processor.tokenizer
+                self.max_length = max_length
+
+            def __call__(self, examples):
+                prompts = [example["prompt"] for example in examples]
+                chosens = [example["chosen"] for example in examples]
+                rejecteds = [example["rejected"] for example in examples]
+                images = [example["image"] for example in examples]
+
+                full_texts = [f"{prompt}{chosen}" for prompt, chosen in zip(prompts, chosens)]
+                full_texts.extend(f"{prompt}{rejected}" for prompt, rejected in zip(prompts, rejecteds))
+                repeated_prompts = prompts + prompts
+                repeated_images = images + images
+
+                batch = self.processor(
+                    text=full_texts,
+                    images=repeated_images,
+                    return_tensors="pt",
+                    padding=True,
+                    truncation=self.max_length is not None,
+                    max_length=self.max_length,
+                )
+
+                prompt_batch = self.processor(
+                    text=repeated_prompts,
+                    images=repeated_images,
+                    return_tensors="pt",
+                    padding=True,
+                    truncation=self.max_length is not None,
+                    max_length=self.max_length,
+                )
+
+                completion_mask = torch.zeros_like(batch["input_ids"], dtype=torch.long)
+                prompt_lengths = prompt_batch["attention_mask"].sum(dim=1)
+                for i, prompt_len in enumerate(prompt_lengths.tolist()):
+                    token_positions = batch["attention_mask"][i].nonzero(as_tuple=True)[0]
+                    completion_mask[i, token_positions[prompt_len:]] = 1
+
+                batch["completion_mask"] = completion_mask
+                return batch
         
         dpo_sequence_limits = {
             "max_length": int(config['train'].get('dpo_max_length', 128)),
@@ -554,6 +597,7 @@ def train(args):
             "model": model,
             "args": training_args,
             "train_dataset": dpo_hf_dataset,
+            "data_collator": MultimodalDPODataCollator(processor, max_length=dpo_sequence_limits["max_length"]),
         }
         dpo_trainer_params = set(inspect.signature(DPOTrainer.__init__).parameters)
         for key, value in dpo_sequence_limits.items():
