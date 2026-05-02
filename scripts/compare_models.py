@@ -24,7 +24,7 @@ import numpy as np
 
 # ─── Cấu hình ────────────────────────────────────────────────────────────────
 
-VARIANTS = ["A1", "A2", "B1", "B2", "DPO"]
+VARIANTS = ["A1", "A2", "B1", "B2", "DPO", "PPO"]
 
 COLORS = {
     "A1":  "#2ecc71",   # xanh lá
@@ -32,10 +32,11 @@ COLORS = {
     "B1":  "#e67e22",   # cam
     "B2":  "#9b59b6",   # tím
     "DPO": "#e74c3c",   # đỏ
+    "PPO": "#1abc9c",   # xanh ngoc
 }
 
 MARKERS = {
-    "A1": "o", "A2": "s", "B1": "^", "B2": "D", "DPO": "P"
+    "A1": "o", "A2": "s", "B1": "^", "B2": "D", "DPO": "P", "PPO": "X"
 }
 
 METRICS_LABELS = {

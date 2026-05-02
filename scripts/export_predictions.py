@@ -397,6 +397,14 @@ def load_direction_b_model(variant: str, config):
         ckpt_dir = select_best_adapter_checkpoint(config["train"].get("b2_output_dir", "./checkpoints/B2"))
         model = PeftModel.from_pretrained(base_model, str(ckpt_dir), is_trainable=False)
         checkpoint = str(ckpt_dir)
+    elif variant == "DPO":
+        ckpt_dir = Path("checkpoints/DPO/final_adapter")
+        model = PeftModel.from_pretrained(base_model, str(ckpt_dir), is_trainable=False)
+        checkpoint = str(ckpt_dir)
+    elif variant == "PPO":
+        ckpt_dir = Path("checkpoints/PPO/final_adapter")
+        model = PeftModel.from_pretrained(base_model, str(ckpt_dir), is_trainable=False)
+        checkpoint = str(ckpt_dir)
     else:
         raise ValueError(f"Variant không hỗ trợ trong script này: {variant}")
 
@@ -634,7 +642,7 @@ def render_compare_html(compare_rows, variants, output_dir: Path, split: str):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Xuất prediction của A1/A2/B1/B2 để so sánh.")
+    parser = argparse.ArgumentParser(description="Xuất prediction của A1/A2/B1/B2/DPO/PPO để so sánh.")
     parser.add_argument("--config", default="configs/medical_vqa.yaml")
     parser.add_argument("--split", default="test", choices=["train", "validation", "test"])
     parser.add_argument("--variants", nargs="+", default=["A1", "A2", "B1", "B2"])
@@ -699,7 +707,7 @@ def main():
         print(f"[SUCCESS] Đã lưu {out_path}")
 
         del model
-        if variant in {"B1", "B2"}:
+        if variant in {"B1", "B2", "DPO", "PPO"}:
             del processor
         if torch.cuda.is_available():
             torch.cuda.empty_cache()

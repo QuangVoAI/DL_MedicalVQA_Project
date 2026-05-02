@@ -69,6 +69,23 @@ dpo:
   eval_steps: 50                      # [NEW] Đánh giá VQA mỗi 50 steps để track reward margin
   save_best_only: true                # Chỉ lưu checkpoint khi reward margin cải thiện
 
+# ── PPO (Reinforcement Learning) ──
+ppo:
+  learning_rate: 5.0e-7               # PPO refinement phai nhe hon DPO de tranh lam xau B2
+  num_samples: 192                    # Rollout subset nho de giu chi phi train hop ly
+  closed_ratio: 0.5                   # PPO danh cho ca closed va open
+  rollout_batch_size: 2               # Batch nho de tranh OOM khi generate + update
+  clip_range: 0.2
+  entropy_coef: 0.001
+  temperature: 0.8
+  top_p: 0.9
+  max_new_tokens: 12
+  max_answer_words: 6
+  closed_positive_reward: 1.0
+  closed_negative_reward: -1.0
+  train_mlp_lora: false
+  weight_decay: 0.0
+
 # ── Training ──
 train:
   a_epochs: 50                        # A1 + A2 (Direction A) model epochs
@@ -157,6 +174,7 @@ wandb:
     B1:  ["zero-shot", "llava-med", "direction-B", "few-shot-prompt"]
     B2:  ["sft", "lora", "fine-tuned", "direction-B", "llava-med"]
     DPO: ["dpo", "rlhf", "preference", "direction-B"]
+    PPO: ["ppo", "reinforcement-learning", "direction-B", "llava-med"]
   notes: "Medical VQA Vietnamese — SLAKE + VQA-RAD merged dataset"
   log_gradients: false      # true = log gradient histogram (chậm hơn ~10%)
   log_freq: 50              # Log mỗi N batch

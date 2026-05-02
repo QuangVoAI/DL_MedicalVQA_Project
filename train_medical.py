@@ -1,12 +1,14 @@
 import wandb
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader, random_split
 from transformers import AutoTokenizer
 import yaml
 import argparse
 import os
+import random
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
@@ -216,6 +218,10 @@ def evaluate_dpo_acceptance(b2_metrics: dict | None, dpo_metrics: dict) -> dict:
     }
 
 
+def evaluate_refinement_acceptance(base_metrics: dict | None, rl_metrics: dict) -> dict:
+    return evaluate_dpo_acceptance(base_metrics, rl_metrics)
+
+
 def sanitize_dpo_completion(question: str, answer: str, max_words: int = 10) -> str:
     question_norm = normalize_answer(question)
     answer_norm = postprocess_answer(answer, max_words=max_words)
@@ -253,6 +259,109 @@ def resolve_dpo_image(item: dict, hf_train_data=None, image_dir: str | None = No
         if os.path.exists(img_path):
             return Image.open(img_path).convert("RGB")
     return None
+
+
+def infer_closed_answer_type(item: dict, answer: str | None = None) -> bool:
+    answer_norm = normalize_answer(answer if answer is not None else get_target_answer(item))
+    answer_type = str(item.get("answer_type", "")).strip().upper()
+    label_closed = item.get("label_closed", None)
+    if answer_type == "CLOSED" or label_closed in (0, 1):
+        return True
+    return answer_norm in {"có", "không", "yes", "no"}
+
+
+def move_model_batch_to_device(batch: dict, device: torch.device) -> dict:
+    moved = {}
+    for key, value in batch.items():
+        if hasattr(value, "to"):
+            moved[key] = value.to(device)
+        else:
+            moved[key] = value
+    return moved
+
+
+def build_multimodal_completion_batch(processor, prompts, completions, images, max_length=None):
+    full_texts = [f"{prompt}{completion}" for prompt, completion in zip(prompts, completions)]
+    batch = processor(
+        text=full_texts,
+        images=images,
+        return_tensors="pt",
+        padding=True,
+        truncation=False,
+    )
+    prompt_batch = processor(
+        text=prompts,
+        images=images,
+        return_tensors="pt",
+        padding=True,
+        truncation=False,
+    )
+
+    completion_mask = torch.zeros_like(batch["input_ids"], dtype=torch.long)
+    prompt_lengths = prompt_batch["attention_mask"].sum(dim=1)
+    for i, prompt_len in enumerate(prompt_lengths.tolist()):
+        token_positions = batch["attention_mask"][i].nonzero(as_tuple=True)[0]
+        completion_mask[i, token_positions[prompt_len:]] = 1
+
+    if max_length is not None and batch["input_ids"].shape[1] > max_length:
+        batch["input_ids"] = batch["input_ids"][:, :max_length]
+        batch["attention_mask"] = batch["attention_mask"][:, :max_length]
+        completion_mask = completion_mask[:, :max_length]
+        for key in ("token_type_ids", "mm_token_type_ids"):
+            if key in batch:
+                batch[key] = batch[key][:, :max_length]
+
+    return batch, completion_mask
+
+
+def compute_masked_sequence_logprobs(model, batch, completion_mask):
+    model_inputs = move_model_batch_to_device(batch, next(model.parameters()).device)
+    completion_mask = completion_mask.to(model_inputs["input_ids"].device)
+    outputs = model(**model_inputs)
+    logits = outputs.logits[:, :-1, :]
+    labels = model_inputs["input_ids"][:, 1:]
+    token_mask = completion_mask[:, 1:].float()
+
+    log_probs = F.log_softmax(logits, dim=-1)
+    token_log_probs = log_probs.gather(-1, labels.unsqueeze(-1)).squeeze(-1)
+    masked_log_probs = token_log_probs * token_mask
+    denom = token_mask.sum(dim=1).clamp_min(1.0)
+    seq_log_probs = masked_log_probs.sum(dim=1) / denom
+
+    probs = log_probs.exp()
+    token_entropy = -(probs * log_probs).sum(dim=-1)
+    seq_entropy = (token_entropy * token_mask).sum(dim=1) / denom
+    return seq_log_probs, seq_entropy
+
+
+def compute_single_open_reward(pred: str, ref: str) -> tuple[float, dict]:
+    from src.utils.metrics import compute_exact_match, compute_f1, compute_rouge_l
+    from src.utils import metrics as metrics_module
+
+    norm_pred = normalize_answer(pred) or "."
+    norm_ref = normalize_answer(ref) or "."
+    exact = compute_exact_match(norm_pred, norm_ref)
+    f1 = compute_f1(norm_pred, norm_ref)
+    rouge_l = compute_rouge_l(norm_pred, norm_ref)
+
+    bert = 0.0
+    scorer = getattr(metrics_module, "bert_scorer", None)
+    if scorer is not None:
+        try:
+            _, _, bert_f1 = scorer.score([norm_pred], [norm_ref])
+            bert = float(bert_f1.mean().item())
+        except Exception:
+            bert = 0.0
+
+    blended = (0.55 * bert) + (0.30 * f1) + (0.10 * rouge_l) + (0.05 * exact)
+    reward = (2.0 * blended) - 1.0
+    return reward, {
+        "bert": bert,
+        "f1": f1,
+        "rouge_l": rouge_l,
+        "exact": exact,
+        "blended": blended,
+    }
 
 def train(args):
     # 1. Load Cấu hình
@@ -489,6 +598,297 @@ def train(args):
         trainer.train(epochs, tokenizer=tokenizer)
         if wandb.run:
             wandb.finish()
+        return
+
+    elif args.variant == 'PPO':
+        from src.engine.medical_eval import evaluate_multimodal_vqa
+
+        ppo_cfg = config.get('ppo', {})
+        ppo_answer_max_words = int(ppo_cfg.get('max_answer_words', min(answer_max_words, 6)))
+        wrapper = MultimodalVQA(
+            model_id=config['model_b']['model_name'],
+            lora_r=int(config['model_b'].get('lora_r', 16)),
+            lora_alpha=int(config['model_b'].get('lora_alpha', 32)),
+            lora_dropout=float(config['model_b'].get('lora_dropout', 0.05)),
+            lora_target_modules=config['model_b'].get('lora_target_modules'),
+        )
+        b2_checkpoint = select_best_adapter_checkpoint(config['train'].get('b2_output_dir', './checkpoints/B2'))
+        print(f"[INFO] PPO sẽ khởi tạo từ B2 checkpoint: {b2_checkpoint}")
+        model, processor = wrapper.load_model(adapter_path=str(b2_checkpoint), is_trainable=True)
+
+        if not ppo_cfg.get('train_mlp_lora', False):
+            frozen_lora = 0
+            for name, param in model.named_parameters():
+                if "lora_" in name and any(proj in name for proj in ("gate_proj", "up_proj", "down_proj")):
+                    param.requires_grad = False
+                    frozen_lora += param.numel()
+            print(f"[INFO] PPO đang freeze LoRA MLP để giảm VRAM: {frozen_lora:,} tham số")
+            model.print_trainable_parameters()
+
+        def _build_ppo_source():
+            if hf_repo:
+                return dataset_dict['train'], dataset_dict['train']
+            if hasattr(train_ds, "dataset") and hasattr(train_ds.dataset, "data"):
+                subset_indices = getattr(train_ds, "indices", list(range(len(train_ds.dataset.data))))
+                local_items = [train_ds.dataset.data[i] for i in subset_indices]
+                return local_items, None
+            raise ValueError("Khong the truy cap raw train data de tao PPO rollout set.")
+
+        def _prepare_ppo_records(raw_items, num_samples: int, closed_ratio: float):
+            closed_records = []
+            open_records = []
+            for idx in range(len(raw_items)):
+                item = raw_items[idx]
+                question = str(item.get("question_vi", item.get("question", ""))).strip()
+                target = get_target_answer(item, max_words=ppo_answer_max_words)
+                if not question or not target:
+                    continue
+                record = {
+                    "question": question,
+                    "target": target,
+                    "source_idx": idx,
+                    "image": item.get("image_name"),
+                    "is_closed": infer_closed_answer_type(item, target),
+                }
+                if record["is_closed"]:
+                    closed_records.append(record)
+                else:
+                    open_records.append(record)
+
+            rng = random.Random(int(config.get("seed", 42)))
+            rng.shuffle(closed_records)
+            rng.shuffle(open_records)
+
+            target_closed = min(len(closed_records), int(round(num_samples * closed_ratio)))
+            target_open = min(len(open_records), max(0, num_samples - target_closed))
+
+            selected = closed_records[:target_closed] + open_records[:target_open]
+            rng.shuffle(selected)
+            return selected
+
+        raw_train_source, hf_train_source = _build_ppo_source()
+        ppo_records = _prepare_ppo_records(
+            raw_train_source,
+            num_samples=int(ppo_cfg.get('num_samples', 192)),
+            closed_ratio=float(ppo_cfg.get('closed_ratio', 0.5)),
+        )
+        if not ppo_records:
+            raise ValueError("Khong tao duoc PPO rollout set hop le.")
+        print(f"[INFO] PPO rollout set: {len(ppo_records)} mau")
+
+        trainable_params = [param for param in model.parameters() if param.requires_grad]
+        optimizer = optim.AdamW(
+            trainable_params,
+            lr=float(ppo_cfg.get('learning_rate', 5.0e-7)),
+            weight_decay=float(ppo_cfg.get('weight_decay', 0.0)),
+        )
+        rollout_batch_size = max(1, int(ppo_cfg.get('rollout_batch_size', 2)))
+        total_updates = max(1, (len(ppo_records) + rollout_batch_size - 1) // rollout_batch_size)
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=total_updates)
+
+        ppo_history = []
+        eos = processor.tokenizer.eos_token or ""
+        max_seq_length = max(int(config['train'].get('dpo_max_length', 768)), 768)
+        grad_clip = float(config['train'].get('grad_clip', 1.0))
+        entropy_coef = float(ppo_cfg.get('entropy_coef', 0.001))
+        clip_range = float(ppo_cfg.get('clip_range', 0.2))
+        max_new_tokens = int(ppo_cfg.get('max_new_tokens', 12))
+        temperature = float(ppo_cfg.get('temperature', 0.8))
+        top_p = float(ppo_cfg.get('top_p', 0.9))
+        closed_positive = float(ppo_cfg.get('closed_positive_reward', 1.0))
+        closed_negative = float(ppo_cfg.get('closed_negative_reward', -1.0))
+
+        print("[INFO] Bắt đầu huấn luyện PPO-style refinement...")
+        model.train()
+        for update_idx in range(total_updates):
+            batch_records = ppo_records[update_idx * rollout_batch_size:(update_idx + 1) * rollout_batch_size]
+            prompts, images, questions, targets, closed_flags = [], [], [], [], []
+            for record in batch_records:
+                image = resolve_dpo_image(
+                    record,
+                    hf_train_data=hf_train_source,
+                    image_dir=config['data'].get('image_dir'),
+                )
+                if image is None:
+                    continue
+                prompts.append(build_dpo_instruction_prompt(record["question"], max_words=ppo_answer_max_words))
+                images.append(image)
+                questions.append(record["question"])
+                targets.append(record["target"])
+                closed_flags.append(record["is_closed"])
+
+            if not prompts:
+                continue
+
+            generation_inputs = processor(
+                text=prompts,
+                images=images,
+                return_tensors="pt",
+                padding=True,
+            )
+            generation_inputs = move_model_batch_to_device(generation_inputs, next(model.parameters()).device)
+            if "pixel_values" in generation_inputs:
+                generation_inputs["pixel_values"] = generation_inputs["pixel_values"].to(torch.bfloat16)
+
+            with torch.no_grad():
+                generated_ids = model.generate(
+                    **generation_inputs,
+                    max_new_tokens=max_new_tokens,
+                    do_sample=True,
+                    temperature=temperature,
+                    top_p=top_p,
+                    num_beams=1,
+                    pad_token_id=processor.tokenizer.pad_token_id,
+                    eos_token_id=processor.tokenizer.eos_token_id,
+                )
+
+            prompt_token_len = generation_inputs["input_ids"].shape[1]
+            generated_texts = processor.batch_decode(
+                generated_ids[:, prompt_token_len:],
+                skip_special_tokens=True,
+            )
+
+            sampled_answers = []
+            rewards = []
+            reward_breakdown = []
+            for question, target, is_closed, raw_output in zip(questions, targets, closed_flags, generated_texts):
+                pred = sanitize_dpo_completion(question, raw_output, max_words=ppo_answer_max_words)
+                if not pred:
+                    pred = "không" if is_closed else "không rõ"
+                sampled_answers.append(pred)
+                if is_closed:
+                    reward = closed_positive if normalize_answer(pred) == normalize_answer(target) else closed_negative
+                    rewards.append(reward)
+                    reward_breakdown.append({"exact": float(reward > 0), "reward": reward})
+                else:
+                    reward, details = compute_single_open_reward(pred, target)
+                    rewards.append(reward)
+                    reward_breakdown.append(details | {"reward": reward})
+
+            completion_texts = [f" {pred}{eos}" for pred in sampled_answers]
+            rollout_batch, rollout_mask = build_multimodal_completion_batch(
+                processor,
+                prompts,
+                completion_texts,
+                images,
+                max_length=max_seq_length,
+            )
+
+            with torch.no_grad():
+                old_seq_log_probs, _ = compute_masked_sequence_logprobs(model, rollout_batch, rollout_mask)
+
+            reward_tensor = torch.tensor(rewards, dtype=torch.float32, device=old_seq_log_probs.device)
+            if reward_tensor.numel() > 1:
+                advantages = reward_tensor - reward_tensor.mean()
+                advantages = advantages / advantages.std(unbiased=False).clamp_min(1e-6)
+            else:
+                advantages = reward_tensor
+
+            optimizer.zero_grad(set_to_none=True)
+            new_seq_log_probs, entropy = compute_masked_sequence_logprobs(model, rollout_batch, rollout_mask)
+            ratios = torch.exp(new_seq_log_probs - old_seq_log_probs.detach())
+            clipped_ratios = torch.clamp(ratios, 1.0 - clip_range, 1.0 + clip_range)
+            surrogate_1 = ratios * advantages
+            surrogate_2 = clipped_ratios * advantages
+            policy_loss = -torch.min(surrogate_1, surrogate_2).mean()
+            entropy_bonus = entropy.mean()
+            loss = policy_loss - (entropy_coef * entropy_bonus)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(trainable_params, grad_clip)
+            optimizer.step()
+            scheduler.step()
+
+            closed_rewards = [r for r, is_closed in zip(rewards, closed_flags) if is_closed]
+            open_rewards = [r for r, is_closed in zip(rewards, closed_flags) if not is_closed]
+            log_record = {
+                "epoch": 1,
+                "update": update_idx + 1,
+                "train_loss": float(loss.detach().cpu().item()),
+                "policy_loss": float(policy_loss.detach().cpu().item()),
+                "entropy": float(entropy_bonus.detach().cpu().item()),
+                "avg_reward": float(sum(rewards) / len(rewards)),
+                "avg_closed_reward": float(sum(closed_rewards) / len(closed_rewards)) if closed_rewards else None,
+                "avg_open_reward": float(sum(open_rewards) / len(open_rewards)) if open_rewards else None,
+                "learning_rate": float(scheduler.get_last_lr()[0]),
+                "sample_predictions": sampled_answers[:2],
+                "sample_targets": targets[:2],
+                "reward_breakdown": reward_breakdown[:2],
+            }
+            ppo_history.append(log_record)
+
+            if wandb.run:
+                wandb.log({
+                    "ppo/train_loss": log_record["train_loss"],
+                    "ppo/policy_loss": log_record["policy_loss"],
+                    "ppo/entropy": log_record["entropy"],
+                    "ppo/avg_reward": log_record["avg_reward"],
+                    "ppo/avg_closed_reward": log_record["avg_closed_reward"],
+                    "ppo/avg_open_reward": log_record["avg_open_reward"],
+                    "ppo/learning_rate": log_record["learning_rate"],
+                    "ppo/update": log_record["update"],
+                })
+
+            del generation_inputs, generated_ids
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+        final_ppo_dir = Path("checkpoints/PPO/final_adapter")
+        final_ppo_dir.mkdir(parents=True, exist_ok=True)
+        model.save_pretrained(str(final_ppo_dir))
+        processor.save_pretrained(str(final_ppo_dir))
+        with open("checkpoints/medical_vqa_ppo_from.txt", "w", encoding="utf-8") as f:
+            f.write(str(b2_checkpoint))
+
+        print("[INFO] Đang chạy đánh giá nghiệm thu trên tập Validation cho PPO...")
+        model.eval()
+        metrics = evaluate_multimodal_vqa(
+            model,
+            val_loader,
+            device,
+            processor,
+            beam_width=config['eval'].get('beam_width_b', 1),
+            beam_width_closed=config['eval'].get('beam_width_b_closed', 1),
+            beam_width_open=config['eval'].get('beam_width_b_open', config['eval'].get('beam_width_b', 1)),
+            max_new_tokens_closed=config['eval'].get('max_new_tokens_b_closed', 4),
+            max_new_tokens_open=config['eval'].get('max_new_tokens_b_open', answer_max_words + 6),
+            generation_batch_size=config['eval'].get('generation_batch_size_b', 1),
+            max_words=answer_max_words,
+            variant='PPO'
+        )
+
+        closed_eval = metrics.get('closed_eval', {})
+        open_eval = metrics.get('open_eval', {})
+        ppo_history.append({
+            "epoch": 1,
+            "val_accuracy_normalized": metrics.get('accuracy_normalized'),
+            "val_f1_normalized": metrics.get('f1_normalized'),
+            "val_bleu4_normalized": metrics.get('bleu4_normalized'),
+            "val_bert_score_raw": metrics.get('bert_score_raw'),
+            "val_semantic_raw": metrics.get('semantic_raw'),
+            "val_closed_accuracy": closed_eval.get('accuracy', 0),
+            "val_closed_em": closed_eval.get('em', 0),
+            "val_closed_f1": closed_eval.get('f1', 0),
+            "val_open_semantic": open_eval.get('semantic', 0),
+            "val_open_bertscore": open_eval.get('bert_score', 0),
+            "val_open_f1": open_eval.get('f1', 0),
+            "val_open_rouge_l": open_eval.get('rouge_l', 0),
+        })
+
+        b2_metrics = load_latest_variant_metrics(os.path.join(config['log_dir'], "history"), "B2")
+        ppo_acceptance = evaluate_refinement_acceptance(b2_metrics, ppo_history[-1])
+        ppo_history[-1]["ppo_acceptance"] = ppo_acceptance
+        print(f"[INFO] {ppo_acceptance['summary']}")
+        if ppo_acceptance["status"] == "accepted":
+            print("[SUCCESS] PPO accepted: dat tieu chi refinement nhe tren B2.")
+        elif ppo_acceptance["status"] == "failed":
+            print("[WARN] PPO failed, keep B2. Khong khuyen nghi tiep tuc tuning them.")
+
+        os.makedirs("checkpoints/PPO", exist_ok=True)
+        with open("checkpoints/PPO/acceptance_summary.json", "w", encoding="utf-8") as f:
+            json.dump(ppo_acceptance, f, ensure_ascii=False, indent=2)
+
+        save_history_records(history_dir, ppo_history)
+        print("[SUCCESS] Đã lưu checkpoint và metrics PPO.")
         return
 
     elif args.variant == 'DPO':
@@ -1071,7 +1471,7 @@ def train(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--config",      type=str, default="configs/medical_vqa.yaml")
-    parser.add_argument("--variant",     type=str, choices=['A1', 'A2', 'B1', 'B2', 'DPO'], required=True)
+    parser.add_argument("--variant",     type=str, choices=['A1', 'A2', 'B1', 'B2', 'DPO', 'PPO'], required=True)
     parser.add_argument("--debug",       action="store_true")
     parser.add_argument("--no_compare",  action="store_true",
                         help="Bỏ qua vẽ chart so sánh 5 model sau khi train xong")

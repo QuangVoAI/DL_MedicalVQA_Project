@@ -124,7 +124,7 @@ def _compute_format_stats(preds: list[str], max_words: int) -> dict[str, float]:
 
 
 def _build_bad_words_ids(processor, variant: str) -> list[list[int]] | None:
-    if variant not in {"B1", "B2", "DPO"}:
+    if variant not in {"B1", "B2", "DPO", "PPO"}:
         return None
 
     tokenizer = getattr(processor, "tokenizer", None)
@@ -474,7 +474,7 @@ def evaluate_multimodal_vqa(
     generation_batch_size=None,
 ):
     """
-    B1 Zero-Shot evaluation & B2/DPO Fine-Tuned evaluation.
+    B1 Zero-Shot evaluation & B2/DPO/PPO Fine-Tuned evaluation.
     """
     model.eval()
     all_preds     = []
@@ -514,7 +514,7 @@ def evaluate_multimodal_vqa(
                     questions_en = translator.translate_vi2en(questions_vi)
                 prompts = [_build_b1_prompt(q, max_words) for q in questions_en]
             else:
-                # B2 & DPO (Fine-tuned) expect Vietnamese instruction directly
+                # B2 / DPO / PPO (Fine-tuned) expect Vietnamese instruction directly
                 prompts = [wrapper.build_instruction_prompt(q, language="vi", include_answer=False) for q in questions_vi]
             preds_raw = [""] * len(prompts)
             closed_idx = [i for i, lbl in enumerate(labels.tolist()) if lbl != -1]
@@ -609,7 +609,7 @@ def evaluate_multimodal_vqa(
                         preds_vi[idx] = postprocess_answer(vi, max_words=max_words)
                 preds_vi_display = list(preds_vi)
             else:
-                # B2 & DPO directly outputs Vietnamese, no translation needed
+                # B2 / DPO / PPO directly outputs Vietnamese, no translation needed
                 preds_vi_display = [postprocess_answer(p, max_words=max_words) if p else "" for p in preds_raw]
                 for i, pred_vi in enumerate(preds_raw):
                     if labels[i].item() != -1:
