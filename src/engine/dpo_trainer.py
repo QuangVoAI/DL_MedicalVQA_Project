@@ -6,25 +6,6 @@ import os
 
 from src.utils.text_utils import get_target_answer, normalize_answer
 
-_VI_TO_EN_ANSWER_MAP = {
-    "có": "yes",
-    "không": "no",
-    "bình thường": "normal",
-    "bất thường": "abnormal",
-    "gan": "liver",
-    "phổi": "lung",
-    "tim": "heart",
-    "não": "brain",
-    "thận": "kidney",
-    "bàng quang": "bladder",
-    "lách": "spleen",
-    "phía trên bên trái": "upper left",
-    "phía trên bên phải": "upper right",
-    "phía dưới bên trái": "lower left",
-    "phía dưới bên phải": "lower right",
-}
-
-
 def _is_closed_question(question: str, answer: str) -> bool:
     q = normalize_answer(question)
     a = normalize_answer(answer)
@@ -36,28 +17,6 @@ def _is_closed_question(question: str, answer: str) -> bool:
     )
 
 
-def _englishify_answer(question: str, answer: str) -> str:
-    q = normalize_answer(question)
-    a = normalize_answer(answer)
-    translated = a
-    for vi, en in sorted(_VI_TO_EN_ANSWER_MAP.items(), key=lambda item: -len(item[0])):
-        translated = translated.replace(vi, en)
-
-    if _is_closed_question(question, answer):
-        if a == "có":
-            if "bình thường" in q:
-                return "Yes, the image appears normal."
-            return "Yes, the finding is present."
-        if a == "không":
-            if "bình thường" in q:
-                return "No, the image is not normal."
-            return "No, the finding is absent."
-
-    if any(term in q for term in ["ở đâu", "vi tri", "where"]):
-        return f"The structure is located at {translated}."
-    return f"The answer is {translated}."
-
-
 def _flip_closed_answer(answer: str) -> str:
     a = normalize_answer(answer)
     if a == "có":
@@ -67,38 +26,82 @@ def _flip_closed_answer(answer: str) -> str:
     return a
 
 
-def _build_rejected_candidates(data: list[dict], idx: int, chosen: str) -> list[str]:
+def _answer_category(question: str, answer: str) -> str:
+    q = normalize_answer(question)
+    a = normalize_answer(answer)
+    if _is_closed_question(question, answer):
+        return "closed"
+    if any(term in q for term in ["ở đâu", "vi tri", "where"]):
+        return "location"
+    if any(term in a for term in ["trái", "phải", "trên", "dưới", "giữa", "bên"]):
+        return "location"
+    if any(term in a for term in ["mặt phẳng", "ngang", "vành", "dọc"]):
+        return "plane"
+    if any(term in a for term in ["gan", "phổi", "tim", "não", "thận", "lách", "bàng quang", "khí quản", "trung thất"]):
+        return "organ"
+    return "finding"
+
+
+def _build_answer_pools(data: list[dict]) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+    question_to_answers = {}
+    category_to_answers = {}
+    for item in data:
+        question = item.get("question_vi", item.get("question", ""))
+        answer = get_target_answer(item, max_words=10)
+        if not question or not answer:
+            continue
+        q_norm = normalize_answer(question)
+        a_norm = normalize_answer(answer)
+        category = _answer_category(question, answer)
+        question_to_answers.setdefault(q_norm, [])
+        if a_norm not in question_to_answers[q_norm]:
+            question_to_answers[q_norm].append(a_norm)
+        category_to_answers.setdefault(category, [])
+        if a_norm not in category_to_answers[category]:
+            category_to_answers[category].append(a_norm)
+    return question_to_answers, category_to_answers
+
+
+def _build_rejected_candidates(
+    data: list[dict],
+    idx: int,
+    chosen: str,
+    question_to_answers: dict[str, list[str]],
+    category_to_answers: dict[str, list[str]],
+) -> list[str]:
     item = data[idx]
     question = item.get("question_vi", item.get("question", ""))
+    question_norm = normalize_answer(question)
+    chosen_norm = normalize_answer(chosen)
+    category = _answer_category(question, chosen)
     candidates = []
-
-    english_verbose = _englishify_answer(question, chosen)
-    if english_verbose:
-        candidates.append(english_verbose)
 
     if _is_closed_question(question, chosen):
         flipped = _flip_closed_answer(chosen)
-        if flipped and flipped != normalize_answer(chosen):
+        if flipped and flipped != chosen_norm:
             candidates.append(flipped)
-            candidates.append(_englishify_answer(question, flipped))
     else:
+        for answer in question_to_answers.get(question_norm, []):
+            if answer != chosen_norm:
+                candidates.append(answer)
+        for answer in category_to_answers.get(category, []):
+            if answer != chosen_norm:
+                candidates.append(answer)
         next_answer = get_target_answer(data[(idx + 1) % len(data)], max_words=10)
-        if next_answer and normalize_answer(next_answer) != normalize_answer(chosen):
-            candidates.append(next_answer)
-        candidates.append(f"{question} {chosen}")
+        if next_answer and normalize_answer(next_answer) != chosen_norm:
+            candidates.append(normalize_answer(next_answer))
 
     deduped = []
-    chosen_norm = normalize_answer(chosen)
     seen = set()
     for candidate in candidates:
         candidate_norm = normalize_answer(candidate)
         if not candidate_norm or candidate_norm == chosen_norm or candidate_norm in seen:
             continue
         seen.add(candidate_norm)
-        deduped.append(candidate)
+        deduped.append(candidate_norm)
     return deduped
 
-def create_preference_data(vqa_json_path, output_path, num_pairs=200):
+def create_preference_data(vqa_json_path, output_path, num_pairs=800):
     """
     Tạo dữ liệu Preference (Chosen vs Rejected) cho DPO.
     Trong Medical VQA, 'Rejected' thường là các câu trả lời bị hallucination hoặc sai thuật ngữ y khoa.
@@ -106,11 +109,18 @@ def create_preference_data(vqa_json_path, output_path, num_pairs=200):
     with open(vqa_json_path, 'r', encoding='utf-8') as f:
         data = json.load(f)
     
+    question_to_answers, category_to_answers = _build_answer_pools(data)
     pref_data = []
     for i in range(len(data)):
         item = data[i]
         chosen = get_target_answer(item, max_words=10)
-        rejected_candidates = _build_rejected_candidates(data, i, chosen)
+        rejected_candidates = _build_rejected_candidates(
+            data,
+            i,
+            chosen,
+            question_to_answers=question_to_answers,
+            category_to_answers=category_to_answers,
+        )
 
         for rejected in rejected_candidates:
             pref_data.append({

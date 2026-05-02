@@ -58,10 +58,11 @@ model_b:
 
 # ── DPO (Reinforcement Learning) ──
 dpo:
-  preference_data: "data/preference_data_slake.json"
-  beta: 0.1                           # DPO temperature
-  num_epochs: 3
+  preference_data: "data/preference_data_slake_v2.json"
+  beta: 0.05                          # DPO nhe hon de giam nguy co keo lech khoi B2
+  num_epochs: 2
   learning_rate: 5.0e-6
+  num_pairs: 800                      # Preference dataset lon hon, hard negatives kho hon
   eval_steps: 50                      # [NEW] Đánh giá VQA mỗi 50 steps để track reward margin
   save_best_only: true                # Chỉ lưu checkpoint khi reward margin cải thiện
 

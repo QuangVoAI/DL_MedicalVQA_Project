@@ -460,9 +460,17 @@ def train(args):
                 os.makedirs("data", exist_ok=True)
                 with open(tmp_json, 'w', encoding='utf-8') as f:
                     json.dump(raw_data, f, ensure_ascii=False, indent=2)
-                create_preference_data(tmp_json, pref_json, num_pairs=200)
+                create_preference_data(
+                    tmp_json,
+                    pref_json,
+                    num_pairs=int(config.get('dpo', {}).get('num_pairs', 800)),
+                )
             else:
-                create_preference_data(config['data']['vqa_json'], pref_json, num_pairs=200)
+                create_preference_data(
+                    config['data']['vqa_json'],
+                    pref_json,
+                    num_pairs=int(config.get('dpo', {}).get('num_pairs', 800)),
+                )
         
         # Đọc file JSON preference data
         with open(pref_json, 'r', encoding='utf-8') as f:
@@ -477,7 +485,11 @@ def train(args):
             tmp_json = "data/tmp_train_for_dpo.json"
             with open(tmp_json, 'w', encoding='utf-8') as f:
                 json.dump(raw_data, f, ensure_ascii=False, indent=2)
-            create_preference_data(tmp_json, pref_json, num_pairs=200)
+            create_preference_data(
+                tmp_json,
+                pref_json,
+                num_pairs=int(config.get('dpo', {}).get('num_pairs', 800)),
+            )
             with open(pref_json, 'r', encoding='utf-8') as f:
                 pref_data = json.load(f)
             
