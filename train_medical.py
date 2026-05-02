@@ -424,6 +424,7 @@ def train(args):
             DPOConfig = None
         from transformers import TrainingArguments
         from datasets import Dataset as HFDataset
+        import inspect
         import json
         
         wrapper = MultimodalVQA(
@@ -516,6 +517,11 @@ def train(args):
             "images": images,
         })
         
+        dpo_sequence_limits = {
+            "max_length": int(config['train'].get('dpo_max_length', 128)),
+            "max_prompt_length": int(config['train'].get('dpo_max_prompt_length', 96)),
+            "max_completion_length": int(config['train'].get('dpo_max_completion_length', 24)),
+        }
         training_args_dict = {
             "output_dir": "./checkpoints/DPO",
             "per_device_train_batch_size": int(config['train'].get('dpo_batch_size', 1)),
@@ -531,13 +537,14 @@ def train(args):
             "save_total_limit": 1,
             "optim": config['train'].get('dpo_optim', 'paged_adamw_8bit'),
             "gradient_checkpointing": True,
-            "max_length": int(config['train'].get('dpo_max_length', 128)),
-            "max_prompt_length": int(config['train'].get('dpo_max_prompt_length', 96)),
-            "max_completion_length": int(config['train'].get('dpo_max_completion_length', 24)),
         }
         
         if DPOConfig is not None:
             training_args_dict["beta"] = float(config.get('dpo', {}).get('beta', 0.1))
+            dpo_config_params = set(inspect.signature(DPOConfig.__init__).parameters)
+            for key, value in dpo_sequence_limits.items():
+                if key in dpo_config_params:
+                    training_args_dict[key] = value
             training_args = DPOConfig(**training_args_dict)
         else:
             training_args = build_training_arguments(TrainingArguments, **training_args_dict)
@@ -548,6 +555,10 @@ def train(args):
             "args": training_args,
             "train_dataset": dpo_hf_dataset,
         }
+        dpo_trainer_params = set(inspect.signature(DPOTrainer.__init__).parameters)
+        for key, value in dpo_sequence_limits.items():
+            if key in dpo_trainer_params:
+                dpo_kwargs[key] = value
         
         try:
             print("[INFO] Thử khởi tạo DPOTrainer với processing_class...")
