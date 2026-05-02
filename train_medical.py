@@ -510,7 +510,8 @@ def train(args):
         
         training_args_dict = {
             "output_dir": "./checkpoints/DPO",
-            "per_device_train_batch_size": config['train'].get('dpo_batch_size', 2),
+            "per_device_train_batch_size": int(config['train'].get('dpo_batch_size', 1)),
+            "gradient_accumulation_steps": int(config['train'].get('dpo_gradient_accumulation_steps', 8)),
             "num_train_epochs": config['train'].get('dpo_epochs', 3),
             "learning_rate": float(config.get('dpo', {}).get('learning_rate', 5.0e-6)),
             "lr_scheduler_type": "cosine",       # [OPTIMIZED] Giúp hội tụ mượt mà hơn
@@ -520,6 +521,11 @@ def train(args):
             "logging_steps": 10,
             "save_strategy": "epoch",
             "save_total_limit": 1,
+            "optim": config['train'].get('dpo_optim', 'paged_adamw_8bit'),
+            "gradient_checkpointing": True,
+            "max_length": int(config['train'].get('dpo_max_length', 128)),
+            "max_prompt_length": int(config['train'].get('dpo_max_prompt_length', 96)),
+            "max_completion_length": int(config['train'].get('dpo_max_completion_length', 24)),
         }
         
         if DPOConfig is not None:
