@@ -3,6 +3,7 @@ import torch.nn.functional as F
 from tqdm import tqdm
 import json
 import os
+import random
 
 from src.utils.text_utils import get_target_answer, normalize_answer
 
@@ -42,12 +43,12 @@ def _answer_category(question: str, answer: str) -> str:
     return "finding"
 
 
-def _build_answer_pools(data: list[dict]) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+def _build_answer_pools(data: list[dict], max_words: int) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
     question_to_answers = {}
     category_to_answers = {}
     for item in data:
         question = item.get("question_vi", item.get("question", ""))
-        answer = get_target_answer(item, max_words=10)
+        answer = get_target_answer(item, max_words=max_words)
         if not question or not answer:
             continue
         q_norm = normalize_answer(question)
@@ -87,10 +88,6 @@ def _build_rejected_candidates(
         for answer in category_to_answers.get(category, []):
             if answer != chosen_norm:
                 candidates.append(answer)
-        next_answer = get_target_answer(data[(idx + 1) % len(data)], max_words=10)
-        if next_answer and normalize_answer(next_answer) != chosen_norm:
-            candidates.append(normalize_answer(next_answer))
-
     deduped = []
     seen = set()
     for candidate in candidates:
@@ -101,7 +98,41 @@ def _build_rejected_candidates(
         deduped.append(candidate_norm)
     return deduped
 
-def create_preference_data(vqa_json_path, output_path, num_pairs=800):
+def _build_pair_record(item: dict, source_idx: int, chosen: str, rejected: str) -> dict:
+    return {
+        "image": item.get("image_name") or item.get("image"),
+        "source_idx": source_idx,
+        "question": item["question_vi"],
+        "chosen": chosen,
+        "rejected": rejected,
+        "answer_type": _answer_category(item["question_vi"], chosen),
+    }
+
+
+def _round_robin_merge(grouped_pairs: dict[str, list[dict]], target_count: int) -> list[dict]:
+    ordered_groups = sorted(grouped_pairs.keys())
+    merged = []
+    while len(merged) < target_count:
+        progressed = False
+        for group in ordered_groups:
+            if grouped_pairs[group]:
+                merged.append(grouped_pairs[group].pop())
+                progressed = True
+                if len(merged) >= target_count:
+                    break
+        if not progressed:
+            break
+    return merged
+
+
+def create_preference_data(
+    vqa_json_path,
+    output_path,
+    num_pairs=400,
+    closed_ratio=0.6,
+    max_answer_words=6,
+    seed=42,
+):
     """
     Tạo dữ liệu Preference (Chosen vs Rejected) cho DPO.
     Trong Medical VQA, 'Rejected' thường là các câu trả lời bị hallucination hoặc sai thuật ngữ y khoa.
@@ -109,36 +140,61 @@ def create_preference_data(vqa_json_path, output_path, num_pairs=800):
     with open(vqa_json_path, 'r', encoding='utf-8') as f:
         data = json.load(f)
     
-    question_to_answers, category_to_answers = _build_answer_pools(data)
-    pref_data = []
+    question_to_answers, category_to_answers = _build_answer_pools(data, max_words=max_answer_words)
+    rng = random.Random(seed)
+    closed_pairs = []
+    open_pairs_by_group = {"location": [], "plane": [], "organ": [], "finding": []}
+
     for i in range(len(data)):
         item = data[i]
-        chosen = get_target_answer(item, max_words=10)
+        chosen = get_target_answer(item, max_words=max_answer_words)
+        chosen_norm = normalize_answer(chosen)
+        if not chosen_norm or len(chosen_norm.split()) > max_answer_words:
+            continue
         rejected_candidates = _build_rejected_candidates(
             data,
             i,
-            chosen,
+            chosen_norm,
             question_to_answers=question_to_answers,
             category_to_answers=category_to_answers,
         )
+        category = _answer_category(item["question_vi"], chosen_norm)
 
         for rejected in rejected_candidates:
-            pref_data.append({
-                "image": item.get("image_name") or item.get("image"),
-                "source_idx": i,
-                "question": item["question_vi"],
-                "chosen": chosen,
-                "rejected": rejected
-            })
-            if len(pref_data) >= num_pairs:
-                break
-        if len(pref_data) >= num_pairs:
-            break
+            if len(rejected.split()) > max_answer_words:
+                continue
+            pair = _build_pair_record(item, i, chosen_norm, rejected)
+            if category == "closed":
+                closed_pairs.append(pair)
+            elif category in open_pairs_by_group:
+                open_pairs_by_group[category].append(pair)
+
+    rng.shuffle(closed_pairs)
+    for pairs in open_pairs_by_group.values():
+        rng.shuffle(pairs)
+
+    target_closed = min(len(closed_pairs), int(round(num_pairs * closed_ratio)))
+    target_open = max(0, num_pairs - target_closed)
+    sampled_closed = closed_pairs[:target_closed]
+    sampled_open = _round_robin_merge(open_pairs_by_group, target_open)
+    pref_data = sampled_closed + sampled_open
+    rng.shuffle(pref_data)
         
     with open(output_path, 'w', encoding='utf-8') as f:
         json.dump(pref_data, f, ensure_ascii=False, indent=2)
     
-    print(f"[SUCCESS] Đã tạo {len(pref_data)} cặp preference dữ liệu tại {output_path}")
+    print(
+        f"[SUCCESS] Đã tạo {len(pref_data)} cặp preference dữ liệu tại {output_path} "
+        f"(closed={len(sampled_closed)}, open={len(sampled_open)})"
+    )
+    preview_count = min(30, len(pref_data))
+    if preview_count:
+        print(f"[INFO] Preview {preview_count} cặp preference đầu tiên để kiểm tra nhanh:")
+        for idx, pair in enumerate(pref_data[:preview_count], start=1):
+            print(
+                f"  [{idx:02d}] type={pair.get('answer_type')} | "
+                f"Q={pair.get('question')} | chosen={pair.get('chosen')} | rejected={pair.get('rejected')}"
+            )
     return pref_data
 
 class MedicalDPOTrainer:

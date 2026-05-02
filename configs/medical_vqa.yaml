@@ -58,11 +58,14 @@ model_b:
 
 # ── DPO (Reinforcement Learning) ──
 dpo:
-  preference_data: "data/preference_data_slake_v2.json"
-  beta: 0.05                          # DPO nhe hon de giam nguy co keo lech khoi B2
-  num_epochs: 2
-  learning_rate: 5.0e-6
-  num_pairs: 800                      # Preference dataset lon hon, hard negatives kho hon
+  preference_data: "data/preference_data_slake_v3.json"
+  beta: 0.01                          # Refinement nhe tren B2, tranh keo model lech qua manh
+  num_epochs: 1
+  learning_rate: 1.0e-6
+  num_pairs: 400                      # So cap vua du de alignment nhe
+  closed_ratio: 0.6                   # 60% closed / 40% open cho muc tieu can bang tong the
+  max_answer_words: 6                 # Preference data ngan, dung phan phoi short-answer VQA
+  force_rebuild_preference_data: true # Luon tao lai v3 de tranh xai nham file cu
   eval_steps: 50                      # [NEW] Đánh giá VQA mỗi 50 steps để track reward margin
   save_best_only: true                # Chỉ lưu checkpoint khi reward margin cải thiện
 
@@ -70,7 +73,7 @@ dpo:
 train:
   a_epochs: 50                        # A1 + A2 (Direction A) model epochs
   epochs: 5                           # B2 fine-tuned model epochs
-  dpo_epochs: 3                       # DPO training epochs
+  dpo_epochs: 1                       # DPO refinement nhe, 1 epoch duy nhat
   batch_size: 32                      # [OPTIMIZED FOR A1/A2]
   b2_batch_size: 1                     # Micro-batch cho LLaVA-Med; tăng effective batch bằng gradient accumulation
   b2_gradient_accumulation_steps: 8    # Effective batch = 8, an toàn hơn nhiều cho 7B multimodal

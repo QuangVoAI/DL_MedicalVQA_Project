@@ -129,16 +129,91 @@ def select_best_adapter_checkpoint(checkpoint_root: str):
     return checkpoint_dirs[-1].resolve()
 
 
-def build_dpo_instruction_prompt(question: str) -> str:
+def build_dpo_instruction_prompt(question: str, max_words: int = 10) -> str:
     question = str(question or "").strip()
     instruction = (
         "Chi tra loi bang tieng Viet. "
         "Khong dung tieng Anh. "
         "Khong lap lai cau hoi. "
         "Khong mo ta hinh anh chung chung. "
-        "Chi tra loi truc tiep dap an, toi da 10 tu."
+        f"Chi tra loi truc tiep dap an, toi da {max_words} tu."
     )
     return f"USER: <image>\n{question}\n{instruction} ASSISTANT:"
+
+
+def load_latest_variant_metrics(history_root: str, variant: str) -> dict | None:
+    variant_dir = Path(history_root) / variant
+    if not variant_dir.exists():
+        return None
+    history_files = sorted(variant_dir.glob("*/history.json"))
+    if not history_files:
+        return None
+    for history_file in reversed(history_files):
+        try:
+            records = json.loads(history_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if records:
+            return records[-1]
+    return None
+
+
+def evaluate_dpo_acceptance(b2_metrics: dict | None, dpo_metrics: dict) -> dict:
+    if not b2_metrics:
+        return {
+            "status": "unknown",
+            "reason": "missing_b2_metrics",
+            "summary": "Khong tim thay metrics B2 de doi chieu.",
+        }
+
+    def pct_delta(key: str) -> float | None:
+        b2_val = b2_metrics.get(key)
+        dpo_val = dpo_metrics.get(key)
+        if b2_val is None or dpo_val is None:
+            return None
+        return (dpo_val - b2_val) * 100.0
+
+    deltas = {
+        "accuracy": pct_delta("val_accuracy_normalized"),
+        "f1": pct_delta("val_f1_normalized"),
+        "bleu4": pct_delta("val_bleu4_normalized"),
+        "closed_acc": pct_delta("val_closed_accuracy"),
+        "open_semantic": pct_delta("val_open_semantic"),
+        "open_bert": pct_delta("val_open_bertscore"),
+    }
+    failed_drop = any(
+        delta is not None and delta < -1.0
+        for delta in (deltas["accuracy"], deltas["f1"], deltas["bleu4"])
+    )
+    closed_ok = (
+        b2_metrics.get("val_closed_accuracy") is not None
+        and dpo_metrics.get("val_closed_accuracy") is not None
+        and dpo_metrics["val_closed_accuracy"] >= b2_metrics["val_closed_accuracy"]
+    )
+    open_ok = (
+        b2_metrics.get("val_open_semantic") is not None
+        and dpo_metrics.get("val_open_semantic") is not None
+        and b2_metrics.get("val_open_bertscore") is not None
+        and dpo_metrics.get("val_open_bertscore") is not None
+        and dpo_metrics["val_open_semantic"] >= b2_metrics["val_open_semantic"]
+        and (dpo_metrics["val_open_bertscore"] - b2_metrics["val_open_bertscore"]) * 100.0 >= -0.3
+    )
+    accepted = (not failed_drop) and (closed_ok or open_ok)
+    def _fmt(delta: float | None) -> str:
+        return "N/A" if delta is None else f"{delta:.2f}"
+    summary = (
+        f"DPO vs B2 deltas (pp): Acc={_fmt(deltas['accuracy'])} | F1={_fmt(deltas['f1'])} | "
+        f"BLEU={_fmt(deltas['bleu4'])} | Closed={_fmt(deltas['closed_acc'])} | "
+        f"OpenSem={_fmt(deltas['open_semantic'])} | OpenBERT={_fmt(deltas['open_bert'])}"
+    )
+    return {
+        "status": "accepted" if accepted else "failed",
+        "reason": "criteria_met" if accepted else "metric_drop_or_no_gain",
+        "summary": summary,
+        "deltas_pp": deltas,
+        "closed_ok": closed_ok,
+        "open_ok": open_ok,
+    }
 
 
 def sanitize_dpo_completion(question: str, answer: str, max_words: int = 10) -> str:
@@ -427,6 +502,7 @@ def train(args):
         import inspect
         import json
         
+        dpo_answer_max_words = int(config.get('dpo', {}).get('max_answer_words', min(answer_max_words, 6)))
         wrapper = MultimodalVQA(
             model_id=config['model_b']['model_name'],
             lora_r=int(config['model_b'].get('lora_r', 16)),
@@ -448,11 +524,16 @@ def train(args):
         
         # Tạo/Load Preference Data
         pref_json = config.get('dpo', {}).get('preference_data', 'data/preference_data_slake.json')
+        force_rebuild_pref = bool(config.get('dpo', {}).get('force_rebuild_preference_data', False))
+        if force_rebuild_pref and os.path.exists(pref_json):
+            print(f"[INFO] Dang xoa preference data cu de tao lai theo cau hinh hien tai: {pref_json}")
+            os.remove(pref_json)
+
         if not os.path.exists(pref_json):
             print(f"[INFO] Chưa có preference data. Đang tự động tạo từ training data...")
             from src.engine.dpo_trainer import create_preference_data
             if hf_repo:
-                raw_data = [{"question_vi": item["question_vi"], "answer_vi": get_target_answer(item, max_words=answer_max_words), 
+                raw_data = [{"question_vi": item["question_vi"], "answer_vi": get_target_answer(item, max_words=dpo_answer_max_words), 
                              "image_name": item.get("image_name"),
                              "source_idx": i} 
                             for i, item in enumerate(dataset_dict['train'])]
@@ -463,13 +544,17 @@ def train(args):
                 create_preference_data(
                     tmp_json,
                     pref_json,
-                    num_pairs=int(config.get('dpo', {}).get('num_pairs', 800)),
+                    num_pairs=int(config.get('dpo', {}).get('num_pairs', 400)),
+                    closed_ratio=float(config.get('dpo', {}).get('closed_ratio', 0.6)),
+                    max_answer_words=dpo_answer_max_words,
                 )
             else:
                 create_preference_data(
                     config['data']['vqa_json'],
                     pref_json,
-                    num_pairs=int(config.get('dpo', {}).get('num_pairs', 800)),
+                    num_pairs=int(config.get('dpo', {}).get('num_pairs', 400)),
+                    closed_ratio=float(config.get('dpo', {}).get('closed_ratio', 0.6)),
+                    max_answer_words=dpo_answer_max_words,
                 )
         
         # Đọc file JSON preference data
@@ -479,7 +564,7 @@ def train(args):
         if hf_repo and any("source_idx" not in item for item in pref_data):
             print("[INFO] Preference data cu khong co source_idx. Dang tao lai de giu lien ket image cho DPO...")
             from src.engine.dpo_trainer import create_preference_data
-            raw_data = [{"question_vi": item["question_vi"], "answer_vi": get_target_answer(item, max_words=answer_max_words),
+            raw_data = [{"question_vi": item["question_vi"], "answer_vi": get_target_answer(item, max_words=dpo_answer_max_words),
                          "image_name": item.get("image_name"), "source_idx": i}
                         for i, item in enumerate(dataset_dict['train'])]
             tmp_json = "data/tmp_train_for_dpo.json"
@@ -488,7 +573,9 @@ def train(args):
             create_preference_data(
                 tmp_json,
                 pref_json,
-                num_pairs=int(config.get('dpo', {}).get('num_pairs', 800)),
+                num_pairs=int(config.get('dpo', {}).get('num_pairs', 400)),
+                closed_ratio=float(config.get('dpo', {}).get('closed_ratio', 0.6)),
+                max_answer_words=dpo_answer_max_words,
             )
             with open(pref_json, 'r', encoding='utf-8') as f:
                 pref_data = json.load(f)
@@ -499,8 +586,8 @@ def train(args):
         filtered_pairs = 0
         for item in pref_data:
             q = item.get("question", "")
-            chosen = sanitize_dpo_completion(q, item.get("chosen", ""), max_words=answer_max_words)
-            rejected = sanitize_dpo_completion(q, item.get("rejected", ""), max_words=answer_max_words)
+            chosen = sanitize_dpo_completion(q, item.get("chosen", ""), max_words=dpo_answer_max_words)
+            rejected = sanitize_dpo_completion(q, item.get("rejected", ""), max_words=dpo_answer_max_words)
             image = resolve_dpo_image(
                 item,
                 hf_train_data=dataset_dict['train'] if hf_repo else None,
@@ -511,7 +598,7 @@ def train(args):
                 filtered_pairs += 1
                 continue
 
-            prompts.append(build_dpo_instruction_prompt(q))
+            prompts.append(build_dpo_instruction_prompt(q, max_words=dpo_answer_max_words))
             chosens.append(f" {chosen}{eos}")
             rejecteds.append(f" {rejected}{eos}")
             images.append(image)
@@ -590,8 +677,8 @@ def train(args):
             "output_dir": "./checkpoints/DPO",
             "per_device_train_batch_size": int(config['train'].get('dpo_batch_size', 1)),
             "gradient_accumulation_steps": int(config['train'].get('dpo_gradient_accumulation_steps', 8)),
-            "num_train_epochs": config['train'].get('dpo_epochs', 3),
-            "learning_rate": float(config.get('dpo', {}).get('learning_rate', 5.0e-6)),
+            "num_train_epochs": config['train'].get('dpo_epochs', 1),
+            "learning_rate": float(config.get('dpo', {}).get('learning_rate', 1.0e-6)),
             "lr_scheduler_type": "cosine",       # [OPTIMIZED] Giúp hội tụ mượt mà hơn
             "warmup_ratio": 0.1,                 # [OPTIMIZED] Tránh sốc gradient ở epoch đầu
             "bf16": True,
@@ -695,6 +782,17 @@ def train(args):
             "val_open_f1": open_eval.get('f1', 0),
             "val_open_rouge_l": open_eval.get('rouge_l', 0),
         })
+        b2_metrics = load_latest_variant_metrics(os.path.join(config['log_dir'], "history"), "B2")
+        dpo_acceptance = evaluate_dpo_acceptance(b2_metrics, trainer.state.log_history[-1])
+        trainer.state.log_history[-1]["dpo_acceptance"] = dpo_acceptance
+        print(f"[INFO] {dpo_acceptance['summary']}")
+        if dpo_acceptance["status"] == "accepted":
+            print("[SUCCESS] DPO accepted: dat tieu chi refinement nhe tren B2.")
+        elif dpo_acceptance["status"] == "failed":
+            print("[WARN] DPO failed, keep B2. Khong khuyen nghi tiep tuc tuning them.")
+        os.makedirs("checkpoints/DPO", exist_ok=True)
+        with open("checkpoints/DPO/acceptance_summary.json", "w", encoding="utf-8") as f:
+            json.dump(dpo_acceptance, f, ensure_ascii=False, indent=2)
         
         save_history_records(history_dir, trainer.state.log_history)
         print("[SUCCESS] Đã lưu checkpoint và metrics DPO.")
