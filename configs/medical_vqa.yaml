@@ -80,8 +80,8 @@ train:
   b2_num_workers: 4                    # Vừa đủ cho multimodal collator, tránh overhead
   dpo_batch_size: 1                    # [OOM FIX] DPO trên GPU 24GB nên dùng micro-batch = 1
   dpo_gradient_accumulation_steps: 16  # Peak VRAM không đổi, nhưng effective batch vẫn đủ ổn định
-  dpo_max_length: 64                   # [OOM FIX] Hạ trần token để giảm single-step memory
-  dpo_max_prompt_length: 48            # [OOM FIX] Prompt cho DPO ngắn, không cần dài như SFT
+  dpo_max_length: 768                  # [OOM FIX] LLaVA can chen du image tokens; < 576 se gay mismatch
+  dpo_max_prompt_length: 640           # [OOM FIX] Cho phep giu tron image tokens + prompt ngan
   dpo_max_completion_length: 12        # [OOM FIX] Completion chỉ vài từ là đủ cho VQA
   dpo_optim: "paged_adamw_8bit"        # [OOM FIX] Optimizer tiết kiệm bộ nhớ
   dpo_train_mlp_lora: false            # [OOM FIX] Chỉ train attention LoRA, freeze MLP LoRA để tránh OOM

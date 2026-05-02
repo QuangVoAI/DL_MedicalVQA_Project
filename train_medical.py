@@ -520,7 +520,10 @@ def train(args):
             def __init__(self, processor, max_length=None):
                 self.processor = processor
                 self.tokenizer = processor.tokenizer
-                self.max_length = max_length
+                # LLaVA expands a single <image> placeholder into hundreds of visual tokens.
+                # If max_length is too small, the processor truncates those tokens and raises
+                # "image token count" mismatch. Keep a safe floor for multimodal DPO.
+                self.max_length = max(max_length or 0, 768) if max_length is not None else None
 
             def __call__(self, examples):
                 prompts = [example["prompt"] for example in examples]
@@ -538,8 +541,7 @@ def train(args):
                     images=repeated_images,
                     return_tensors="pt",
                     padding=True,
-                    truncation=self.max_length is not None,
-                    max_length=self.max_length,
+                    truncation=False,
                 )
 
                 prompt_batch = self.processor(
@@ -547,8 +549,7 @@ def train(args):
                     images=repeated_images,
                     return_tensors="pt",
                     padding=True,
-                    truncation=self.max_length is not None,
-                    max_length=self.max_length,
+                    truncation=False,
                 )
 
                 completion_mask = torch.zeros_like(batch["input_ids"], dtype=torch.long)
@@ -557,11 +558,19 @@ def train(args):
                     token_positions = batch["attention_mask"][i].nonzero(as_tuple=True)[0]
                     completion_mask[i, token_positions[prompt_len:]] = 1
 
+                if self.max_length is not None and batch["input_ids"].shape[1] > self.max_length:
+                    batch["input_ids"] = batch["input_ids"][:, :self.max_length]
+                    batch["attention_mask"] = batch["attention_mask"][:, :self.max_length]
+                    completion_mask = completion_mask[:, :self.max_length]
+                    for key in ("token_type_ids", "mm_token_type_ids"):
+                        if key in batch:
+                            batch[key] = batch[key][:, :self.max_length]
+
                 batch["completion_mask"] = completion_mask
                 return batch
         
         dpo_sequence_limits = {
-            "max_length": int(config['train'].get('dpo_max_length', 128)),
+            "max_length": max(int(config['train'].get('dpo_max_length', 768)), 768),
             "max_prompt_length": int(config['train'].get('dpo_max_prompt_length', 96)),
             "max_completion_length": int(config['train'].get('dpo_max_completion_length', 24)),
         }
