@@ -49,6 +49,7 @@ checkpoints/
 
 # Logs & Results
 logs/
+!logs.zip
 *.log
 results/charts/       # PNG charts lớn — tái tạo bằng compare_models.py
 
