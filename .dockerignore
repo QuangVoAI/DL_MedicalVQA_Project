@@ -1,0 +1,14 @@
+.git
+.gitignore
+.DS_Store
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.ipynb_checkpoints/
+*.ipynb
+logs/
+results/
+scratch/
+logs.zip
+*.log

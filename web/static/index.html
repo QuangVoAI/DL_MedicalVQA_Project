@@ -1,0 +1,656 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Medical VQA Compare</title>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com" rel="preconnect"/>
+<link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;500;600;700&amp;family=Noto+Serif+SC:wght@300;400;500;700&amp;display=swap" rel="stylesheet"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script id="tailwind-config">
+    tailwind.config = {
+      darkMode: "class",
+      theme: {
+        extend: {
+          colors: {
+            "imperial-red": "#A8181B",
+            "china-gold": "#A88412",
+            "gold-light": "#F9E79F",
+            "deep-crimson": "#7D0A0D",
+            "ink-black": "#1A1A1A",
+            "paper-white": "#FDFBF7",
+            "jade-dark": "#0B3D30"
+          },
+          fontFamily: {
+            "serif": ["Noto Serif SC", "Cinzel", "serif"],
+            "display": ["Cinzel", "serif"]
+          },
+          backgroundImage: {
+            'cloud-pattern': "url(\"data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%23d4af37' fill-opacity='0.1'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E\")",
+            'ink-wash': "linear-gradient(to bottom right, #FDFBF7, #F2EFE9)"
+          },
+          boxShadow: {
+            'gold-glow': '0 0 15px rgba(212, 175, 55, 0.3)',
+            'red-glow': '0 4px 20px rgba(168, 24, 27, 0.25)'
+          }
+        }
+      }
+    }
+</script>
+<style>
+  :root {
+    --tilt-x: 0deg;
+    --tilt-y: 0deg;
+  }
+
+  .scene-3d {
+    perspective: 1600px;
+    transform-style: preserve-3d;
+  }
+
+  .tilt-card {
+    transform-style: preserve-3d;
+    transition: transform 180ms ease, box-shadow 180ms ease;
+    will-change: transform;
+  }
+
+  .tilt-card:hover {
+    box-shadow: 0 24px 50px rgba(168, 24, 27, 0.18), 0 10px 20px rgba(0, 0, 0, 0.08);
+  }
+
+  .float-slow {
+    animation: floatY 6.5s ease-in-out infinite;
+  }
+
+  .float-med {
+    animation: floatY 5.2s ease-in-out infinite;
+  }
+
+  .float-fast {
+    animation: floatY 4.4s ease-in-out infinite;
+  }
+
+  .spin-slow {
+    animation: spin360 18s linear infinite;
+  }
+
+  .pulse-ring {
+    animation: pulseRing 2.8s ease-in-out infinite;
+  }
+
+  .hover-lift {
+    transform: translateZ(18px);
+  }
+
+  .medical-glow {
+    box-shadow: 0 0 0 1px rgba(212, 175, 55, 0.18), 0 12px 40px rgba(168, 24, 27, 0.16);
+  }
+
+  .depth-line {
+    position: relative;
+  }
+
+  .depth-line::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    background: linear-gradient(135deg, rgba(255,255,255,0.45), rgba(255,255,255,0.03));
+    transform: translateZ(-2px);
+    pointer-events: none;
+  }
+
+  @keyframes floatY {
+    0%, 100% { transform: translateY(0px) translateZ(0); }
+    50% { transform: translateY(-10px) translateZ(18px); }
+  }
+
+  @keyframes spin360 {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+  }
+
+  @keyframes pulseRing {
+    0%, 100% { transform: scale(1); opacity: 0.65; }
+    50% { transform: scale(1.08); opacity: 1; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .float-slow,
+    .float-med,
+    .float-fast,
+    .spin-slow,
+    .pulse-ring {
+      animation: none !important;
+    }
+  }
+</style>
+<style type="text/tailwindcss">
+  @layer utilities {
+    .ornate-border {
+      border: 2px solid #D4AF37;
+      position: relative;
+    }
+    .ornate-border::before {
+      content: "";
+      position: absolute;
+      top: -4px; left: -4px; right: -4px; bottom: -4px;
+      border: 1px solid #D4AF37;
+      pointer-events: none;
+      opacity: 0.5;
+    }
+    .horse-bg-clip {
+      background-clip: text;
+      -webkit-background-clip: text;
+      color: transparent;
+      background-image: linear-gradient(to right, #D4AF37, #F9E79F, #D4AF37);
+    }
+  }
+</style>
+</head>
+<body class="bg-paper-white font-serif text-ink-black antialiased selection:bg-imperial-red/20 selection:text-imperial-red bg-cloud-pattern min-h-screen">
+<div class="relative flex min-h-screen w-full flex-col overflow-x-hidden bg-gradient-to-b from-imperial-red/5 to-transparent">
+<header class="sticky top-0 z-50 flex h-[64px] w-full items-center justify-between bg-paper-white/95 px-4 md:px-8 backdrop-blur-md border-b-2 border-china-gold/30 shadow-sm">
+<div class="mx-auto flex w-full max-w-[1280px] items-center justify-between">
+<div class="flex items-center gap-3 hover:opacity-80 transition-opacity cursor-pointer">
+<div class="flex items-center justify-center size-10 rounded-full border border-china-gold bg-imperial-red text-china-gold">
+<span class="material-symbols-outlined text-[24px]">bedroom_baby</span>
+</div>
+<span class="text-[20px] font-display font-bold tracking-wide text-imperial-red">Medical <span class="text-china-gold">VQA</span></span>
+</div>
+<nav class="hidden md:flex items-center gap-10">
+<a class="text-[14px] font-medium text-ink-black/70 hover:text-imperial-red transition-colors uppercase tracking-widest" href="#upload">Upload</a>
+<a class="text-[14px] font-medium text-ink-black/70 hover:text-imperial-red transition-colors uppercase tracking-widest" href="#results">Models</a>
+<a class="text-[14px] font-medium text-ink-black/70 hover:text-imperial-red transition-colors uppercase tracking-widest" href="#results">Results</a>
+</nav>
+<div class="flex items-center gap-4">
+<button class="hidden md:flex h-9 items-center justify-center rounded-sm border border-imperial-red bg-transparent px-5 text-[13px] font-bold text-imperial-red transition-all hover:bg-imperial-red hover:text-paper-white uppercase tracking-wider">
+X2 Vision
+</button>
+</div>
+</div>
+</header>
+
+<main class="flex flex-1 flex-col items-center pt-12 pb-24 px-4 sm:px-6">
+<div class="flex flex-col items-center text-center max-w-4xl mx-auto mb-14">
+<div class="mb-4 flex items-center gap-2">
+<div class="h-[1px] w-12 bg-china-gold"></div>
+<span class="text-china-gold font-display text-sm tracking-[0.2em] uppercase">6-model comparison</span>
+<div class="h-[1px] w-12 bg-china-gold"></div>
+</div>
+<h1 class="text-imperial-red text-[42px] md:text-[64px] font-display font-bold leading-[1.1] tracking-tight mb-6 drop-shadow-sm">
+Medical<br/>
+
+<span class="whitespace-nowrap">Visual Question Answering</span>
+</h1>
+<p class="text-ink-black/70 text-[18px] md:text-[20px] font-light leading-relaxed max-w-3xl font-serif italic">
+
+</p>
+<div class="mt-8 scene-3d relative w-full max-w-[760px]">
+  <div class="absolute inset-0 rounded-full bg-imperial-red/10 blur-3xl pulse-ring"></div>
+  <div class="relative mx-auto flex items-center justify-center gap-5 md:gap-8">
+    <div class="tilt-card float-slow depth-line medical-glow rounded-full border border-china-gold/35 bg-paper-white/95 px-5 py-4 flex items-center gap-3">
+      <span class="material-symbols-outlined text-[30px] text-imperial-red">medical_services</span>
+      <div class="text-left">
+        <div class="text-[11px] uppercase tracking-[0.22em] text-china-gold font-bold">Clinical</div>
+        <div class="font-display font-bold text-ink-black">Assist</div>
+      </div>
+    </div>
+    <div class="tilt-card float-med depth-line medical-glow rounded-full border border-china-gold/35 bg-paper-white/95 px-5 py-4 flex items-center gap-3">
+      <span class="material-symbols-outlined text-[30px] text-imperial-red spin-slow">monitor_heart</span>
+      <div class="text-left">
+        <div class="text-[11px] uppercase tracking-[0.22em] text-china-gold font-bold">Vitals</div>
+        <div class="font-display font-bold text-ink-black">Heartbeat</div>
+      </div>
+    </div>
+    <div class="tilt-card float-fast depth-line medical-glow rounded-full border border-china-gold/35 bg-paper-white/95 px-5 py-4 flex items-center gap-3">
+      <span class="material-symbols-outlined text-[30px] text-imperial-red">biotech</span>
+      <div class="text-left">
+        <div class="text-[11px] uppercase tracking-[0.22em] text-china-gold font-bold">Imaging</div>
+        <div class="font-display font-bold text-ink-black">Analyzer</div>
+      </div>
+    </div>
+  </div>
+</div>
+</div>
+
+<div id="upload" class="w-full max-w-[1280px] bg-paper-white rounded-none shadow-gold-glow ornate-border flex flex-col lg:flex-row relative">
+<div class="absolute -top-2 -left-2 size-8 border-t-4 border-l-4 border-imperial-red z-10"></div>
+<div class="absolute -top-2 -right-2 size-8 border-t-4 border-r-4 border-imperial-red z-10"></div>
+<div class="absolute -bottom-2 -left-2 size-8 border-b-4 border-l-4 border-imperial-red z-10"></div>
+<div class="absolute -bottom-2 -right-2 size-8 border-b-4 border-r-4 border-imperial-red z-10"></div>
+
+<div class="w-full lg:w-[42%] p-8 md:p-12 flex flex-col border-b lg:border-b-0 lg:border-r border-china-gold/30 bg-[url('https://www.transparenttextures.com/patterns/rice-paper-2.png')]">
+<div class="flex items-center justify-between mb-6">
+<h3 class="text-[20px] font-display font-bold text-ink-black border-l-4 border-imperial-red pl-3">Source Scroll</h3>
+<button id="reset-btn" class="text-imperial-red text-sm font-medium hover:text-deep-crimson flex items-center gap-1 transition-colors">
+<span class="material-symbols-outlined text-[18px]">restart_alt</span>
+Reset
+</button>
+</div>
+
+<div id="dropzone" class="relative group w-full aspect-square md:aspect-[4/3] bg-[#F2EFE9] border-2 border-dashed border-china-gold/60 flex items-center justify-center transition-all hover:border-imperial-red hover:bg-white cursor-pointer shadow-inner overflow-hidden">
+<div class="absolute inset-2 border border-china-gold/20 pointer-events-none"></div>
+<div id="dropzone-empty" class="flex flex-col items-center gap-4 z-10 p-6 text-center">
+<div class="size-16 rounded-full bg-imperial-red/5 flex items-center justify-center text-imperial-red mb-2">
+<span class="material-symbols-outlined text-4xl">cloud_upload</span>
+</div>
+<div class="space-y-2">
+<p class="text-ink-black font-display font-semibold text-lg">Upload Image</p>
+<p class="text-ink-black/50 text-sm font-serif italic">JPG, PNG, WEBP accepted</p>
+</div>
+</div>
+<img id="preview" class="absolute inset-0 h-full w-full object-contain bg-white hidden" alt="Preview"/>
+<input id="image-input" aria-label="Upload Image" class="absolute inset-0 opacity-0 cursor-pointer" type="file" accept="image/*"/>
+</div>
+
+</div>
+
+<div class="w-full lg:w-[58%] p-8 md:p-12 flex flex-col bg-paper-white bg-[url('https://www.transparenttextures.com/patterns/rice-paper-2.png')]">
+<div class="mb-6">
+<h3 class="text-[20px] font-display font-bold text-ink-black border-l-4 border-imperial-red pl-3 mb-2">Inquiry</h3>
+<p class="text-ink-black/60 text-sm italic font-serif">Ask one question and compare every model response in parallel.</p>
+</div>
+
+<div class="flex-1 flex flex-col gap-6">
+<label class="relative flex-1">
+<textarea id="question" class="w-full h-40 md:h-full resize-none border border-china-gold/40 bg-[#F9F7F2] p-6 text-[18px] text-ink-black placeholder:text-ink-black/30 focus:border-imperial-red focus:ring-1 focus:ring-imperial-red focus:outline-none transition-shadow font-serif leading-relaxed" placeholder="What abnormality is visible in the image? / Có bất thường gì không?"></textarea>
+<div class="absolute top-0 right-0 p-2 opacity-10 pointer-events-none">
+<span class="material-symbols-outlined text-6xl text-imperial-red">edit_note</span>
+</div>
+<div class="absolute bottom-3 right-3 text-xs text-china-gold font-display" id="char-count">0/200 Characters</div>
+</label>
+
+<div class="flex flex-wrap items-center gap-2 pt-1">
+<span class="text-[12px] md:text-[13px] uppercase tracking-[0.24em] text-china-gold font-bold mr-1">Gợi ý:</span>
+<div id="suggestions-row" class="flex flex-wrap gap-2"></div>
+</div>
+
+<div class="space-y-5 pt-2">
+<div class="flex items-center gap-3">
+<span class="text-xs font-bold uppercase tracking-widest text-china-gold">Model set:</span>
+<div class="flex gap-2 overflow-x-auto pb-1 no-scrollbar">
+<button type="button" class="model-chip whitespace-nowrap border border-china-gold/30 bg-white px-4 py-1.5 text-xs font-medium text-ink-black hover:border-imperial-red hover:text-imperial-red transition-colors font-serif" data-model="A1">A1</button>
+<button type="button" class="model-chip whitespace-nowrap border border-china-gold/30 bg-white px-4 py-1.5 text-xs font-medium text-ink-black hover:border-imperial-red hover:text-imperial-red transition-colors font-serif" data-model="A2">A2</button>
+<button type="button" class="model-chip whitespace-nowrap border border-china-gold/30 bg-white px-4 py-1.5 text-xs font-medium text-ink-black hover:border-imperial-red hover:text-imperial-red transition-colors font-serif" data-model="B1">B1</button>
+<button type="button" class="model-chip whitespace-nowrap border border-china-gold/30 bg-white px-4 py-1.5 text-xs font-medium text-ink-black hover:border-imperial-red hover:text-imperial-red transition-colors font-serif" data-model="B2">B2</button>
+<button type="button" class="model-chip whitespace-nowrap border border-china-gold/30 bg-white px-4 py-1.5 text-xs font-medium text-ink-black hover:border-imperial-red hover:text-imperial-red transition-colors font-serif" data-model="DPO">DPO</button>
+<button type="button" class="model-chip whitespace-nowrap border border-china-gold/30 bg-white px-4 py-1.5 text-xs font-medium text-ink-black hover:border-imperial-red hover:text-imperial-red transition-colors font-serif" data-model="PPO">PPO</button>
+</div>
+</div>
+
+<button id="run-btn" class="group w-full bg-gradient-to-r from-imperial-red to-deep-crimson hover:from-red-700 hover:to-red-900 py-4 px-6 text-[18px] font-bold text-gold-light shadow-red-glow transition-all active:scale-[0.99] flex items-center justify-center gap-3 border border-china-gold relative overflow-hidden">
+<div class="absolute inset-0 bg-[url('https://www.transparenttextures.com/patterns/black-scales.png')] opacity-10"></div>
+<span class="relative z-10 font-display tracking-widest uppercase">Run Comparison</span>
+<span class="material-symbols-outlined text-[24px] relative z-10 group-hover:rotate-12 transition-transform text-gold-light">savings</span>
+<span class="material-symbols-outlined absolute right-6 text-[28px] opacity-20 group-hover:opacity-40 transition-opacity text-gold-light">chess_knight</span>
+</button>
+
+<div class="text-center text-sm font-serif italic text-ink-black/60" id="status-text">Select an image, enter a question, then run all six models.</div>
+</div>
+</div>
+</div>
+</div>
+
+<section id="results" class="mt-20 w-full max-w-[1280px]">
+<div class="flex flex-col items-center text-center mb-8">
+<div class="h-[1px] w-24 bg-china-gold"></div>
+<h2 class="mt-4 text-imperial-red text-[30px] md:text-[40px] font-display font-bold tracking-tight">Outputs</h2>
+<p class="mt-3 max-w-3xl text-ink-black/65 italic font-serif">
+Six models, six output cards, one result per card.
+</p>
+</div>
+
+<div id="results-grid" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6"></div>
+</section>
+
+<div class="mt-24 grid grid-cols-1 md:grid-cols-3 gap-8 w-full max-w-[1280px] relative">
+<div class="absolute -top-12 left-1/2 -translate-x-1/2 w-24 h-1 bg-china-gold rounded-full"></div>
+<div class="flex flex-col gap-4 p-8 bg-paper-white border border-china-gold/20 shadow-sm hover:shadow-gold-glow transition-shadow duration-300 relative overflow-hidden group">
+<div class="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-imperial-red to-transparent opacity-0 group-hover:opacity-100 transition-opacity"></div>
+<div class="size-12 flex items-center justify-center text-imperial-red mb-2 border border-china-gold/30 rounded-full bg-gold-light/20">
+<span class="material-symbols-outlined text-2xl">neurology</span>
+</div>
+<h4 class="text-[18px] font-display font-bold text-ink-black">A1 / A2</h4>
+<p class="text-[15px] leading-relaxed text-ink-black/70 font-serif">
+Closed-vocab models with separate answer heads. The new UI gives each model a dedicated response card.
+</p>
+</div>
+<div class="flex flex-col gap-4 p-8 bg-paper-white border border-china-gold/20 shadow-sm hover:shadow-gold-glow transition-shadow duration-300 relative overflow-hidden group">
+<div class="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-imperial-red to-transparent opacity-0 group-hover:opacity-100 transition-opacity"></div>
+<div class="size-12 flex items-center justify-center text-imperial-red mb-2 border border-china-gold/30 rounded-full bg-gold-light/20">
+<span class="material-symbols-outlined text-2xl">bolt</span>
+</div>
+<h4 class="text-[18px] font-display font-bold text-ink-black">B1 / B2</h4>
+<p class="text-[15px] leading-relaxed text-ink-black/70 font-serif">
+Zero-shot and fine-tuned LLaVA models are compared side by side with latency and raw answer displayed.
+</p>
+</div>
+<div class="flex flex-col gap-4 p-8 bg-paper-white border border-china-gold/20 shadow-sm hover:shadow-gold-glow transition-shadow duration-300 relative overflow-hidden group">
+<div class="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-imperial-red to-transparent opacity-0 group-hover:opacity-100 transition-opacity"></div>
+<div class="size-12 flex items-center justify-center text-imperial-red mb-2 border border-china-gold/30 rounded-full bg-gold-light/20">
+<span class="material-symbols-outlined text-2xl">verified</span>
+</div>
+<h4 class="text-[18px] font-display font-bold text-ink-black">DPO / PPO</h4>
+<p class="text-[15px] leading-relaxed text-ink-black/70 font-serif">
+Alignment and RL variants now have equal room in the grid, making the comparison feel intentional.
+</p>
+</div>
+</div>
+</main>
+
+<footer class="w-full border-t-4 border-imperial-red bg-ink-black text-paper-white py-12">
+<div class="mx-auto flex max-w-[1280px] flex-col md:flex-row items-center justify-between gap-8 px-4 md:px-0">
+<div class="flex flex-col gap-2 md:items-start items-center">
+<div class="flex items-center gap-2 mb-2">
+<span class="material-symbols-outlined text-china-gold">chess_knight</span>
+<span class="font-display font-bold text-lg tracking-wider">VQA RESEARCH</span>
+</div>
+<div class="text-[13px] text-paper-white/60 font-serif">
+Medical VQA web demo for six-model comparison.
+</div>
+</div>
+<div class="flex gap-8 text-[13px] text-paper-white/80 font-display tracking-widest uppercase">
+<a class="hover:text-china-gold transition-colors" href="#upload">Upload</a>
+<a class="hover:text-china-gold transition-colors" href="#results">Results</a>
+</div>
+</div>
+</footer>
+</div>
+
+<script>
+  const MODEL_ORDER = ["A1", "A2", "B1", "B2", "DPO", "PPO"];
+  const MODEL_META = {
+    A1: { name: "A1", title: "LSTM Baseline", note: "DenseNet-121 + PhoBERT + LSTM", icon: "neurology" },
+    A2: { name: "A2", title: "Transformer Decoder", note: "DenseNet-121 + PhoBERT + Transformer", icon: "schema" },
+    B1: { name: "B1", title: "Zero-shot", note: "LLaVA-Med base", icon: "visibility" },
+    B2: { name: "B2", title: "Fine-tuned", note: "LLaVA-Med + LoRA", icon: "precision_manufacturing" },
+    DPO: { name: "DPO", title: "Alignment", note: "B2 + DPO", icon: "verified" },
+    PPO: { name: "PPO", title: "RL refinement", note: "B2 + PPO", icon: "syringe" },
+  };
+
+  const el = {
+    imageInput: document.getElementById("image-input"),
+    preview: document.getElementById("preview"),
+    dropzoneEmpty: document.getElementById("dropzone-empty"),
+    dropzone: document.getElementById("dropzone"),
+    question: document.getElementById("question"),
+    charCount: document.getElementById("char-count"),
+    suggestionsRow: document.getElementById("suggestions-row"),
+    runBtn: document.getElementById("run-btn"),
+    resetBtn: document.getElementById("reset-btn"),
+    statusText: document.getElementById("status-text"),
+    resultsGrid: document.getElementById("results-grid"),
+  };
+
+  let currentImageFile = null;
+  let selectedModels = new Set(MODEL_ORDER);
+  let questionSuggestions = [];
+
+  function escapeHtml(value) {
+    return String(value ?? "")
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;");
+  }
+
+  function updateCharCount() {
+    el.charCount.textContent = `${el.question.value.length}/200 Characters`;
+  }
+
+  function setStatus(message) {
+    el.statusText.textContent = message;
+  }
+
+  function setPreview(file) {
+    currentImageFile = file || null;
+    if (!file) {
+      el.preview.classList.add("hidden");
+      el.dropzoneEmpty.classList.remove("hidden");
+      el.preview.src = "";
+      return;
+    }
+    const url = URL.createObjectURL(file);
+    el.preview.src = url;
+    el.preview.classList.remove("hidden");
+    el.dropzoneEmpty.classList.add("hidden");
+  }
+
+  function fillQuestion(question) {
+    el.question.value = question || "";
+    updateCharCount();
+    el.question.focus();
+  }
+
+  function renderQuestionSuggestions(items) {
+    questionSuggestions = items || [];
+    if (!questionSuggestions.length) {
+      el.suggestionsRow.innerHTML = "";
+      return;
+    }
+
+    el.suggestionsRow.innerHTML = questionSuggestions.map((item, index) => {
+      const question = escapeHtml(item.question || "");
+      return `
+        <button type="button" class="hint-chip inline-flex items-center gap-2 rounded-full bg-transparent px-2 py-1 text-left text-[12px] leading-tight text-ink-black/50 hover:bg-imperial-red/5 hover:text-imperial-red transition-all" data-suggestion-index="${index}">
+          <span class="size-1.5 rounded-full bg-imperial-red/70"></span>
+          <span class="truncate max-w-[280px] font-serif">${question}</span>
+        </button>
+      `;
+    }).join("");
+
+    el.suggestionsRow.querySelectorAll("[data-suggestion-index]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const index = Number(button.dataset.suggestionIndex);
+        const item = questionSuggestions[index];
+        if (!item) return;
+        fillQuestion(item.question);
+        setStatus(`Loaded suggested question.`);
+      });
+    });
+
+  }
+
+  async function loadQuestionSuggestions() {
+    if (questionSuggestions.length) {
+      return;
+    }
+    el.suggestionsRow.innerHTML = "";
+
+    try {
+      const res = await fetch("/v1/question-suggestions?limit=8");
+      const data = await res.json();
+      renderQuestionSuggestions(data.suggestions || []);
+    } catch (err) {
+      el.suggestionsRow.innerHTML = "";
+    }
+  }
+
+  function renderModelGrid(results) {
+    const byVariant = Object.fromEntries(results.map((r) => [r.variant, r]));
+
+    el.resultsGrid.innerHTML = MODEL_ORDER.map((variant) => {
+      const meta = MODEL_META[variant];
+      const res = byVariant[variant];
+      const status = res ? res.status : "not requested";
+      const ok = res && res.status === "ok";
+      const answer = res ? (res.prediction || res.status) : "Not requested";
+      const cardTone = ok ? "border-emerald-200/70 shadow-[0_18px_40px_rgba(16,185,129,0.10)]" : res ? "border-rose-200/70 shadow-[0_18px_40px_rgba(244,63,94,0.08)]" : "border-china-gold/25 shadow-sm";
+      const answerTone = ok ? "text-ink-black" : res ? "text-rose-700" : "text-amber-700";
+      return `
+        <article class="tilt-card bg-paper-white border ${cardTone} p-5 md:p-6 flex flex-col gap-4 relative overflow-hidden">
+          <div class="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-transparent via-imperial-red to-transparent ${ok ? 'opacity-100' : 'opacity-45'}"></div>
+          <div class="flex items-center justify-between gap-4">
+            <div class="flex items-center gap-3">
+              <div class="size-11 rounded-full border flex items-center justify-center ${ok ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : res ? 'bg-rose-50 text-rose-700 border-rose-200' : 'bg-amber-50 text-amber-700 border-amber-200'} ${ok ? 'pulse-ring' : ''}">
+                <span class="material-symbols-outlined text-[22px]">${meta.icon}</span>
+              </div>
+              <div>
+                <div class="text-[11px] uppercase tracking-[0.2em] text-china-gold font-bold">${meta.name}</div>
+                <div class="text-[15px] font-display font-bold text-ink-black">${meta.title}</div>
+              </div>
+            </div>
+            <span class="text-[11px] uppercase tracking-[0.18em] font-bold ${ok ? 'text-emerald-700' : res ? 'text-rose-700' : 'text-amber-700'}">
+              ${res ? (ok ? "Output" : "Error") : "Idle"}
+            </span>
+          </div>
+
+          <div class="min-h-[120px] rounded-none border border-china-gold/20 bg-[#FAF7F0] p-5 flex items-center">
+            <p class="text-[18px] md:text-[20px] leading-relaxed font-serif ${answerTone}">
+              ${escapeHtml(answer)}
+            </p>
+          </div>
+
+          <div class="flex items-center justify-between text-[12px] text-ink-black/55">
+            <span>${escapeHtml(res ? (res.prediction_raw || "") : "")}</span>
+            <span>${escapeHtml(status)}</span>
+          </div>
+        </article>
+      `;
+    }).join("");
+  }
+
+  function updateModelChips() {
+    document.querySelectorAll(".model-chip").forEach((chip) => {
+      const variant = chip.dataset.model;
+      const active = selectedModels.has(variant);
+      chip.style.background = active ? "#A8181B" : "#fff";
+      chip.style.color = active ? "#FDFBF7" : "#1A1A1A";
+      chip.style.borderColor = active ? "#A8181B" : "rgba(212,175,55,0.35)";
+    });
+  }
+
+  function applyTiltEffect(selector, maxRotate = 6) {
+    document.querySelectorAll(selector).forEach((card) => {
+      if (card.dataset.tiltBound === "1") return;
+      card.dataset.tiltBound = "1";
+      card.addEventListener("mousemove", (e) => {
+        const rect = card.getBoundingClientRect();
+        const x = (e.clientX - rect.left) / rect.width;
+        const y = (e.clientY - rect.top) / rect.height;
+        const rotateY = (x - 0.5) * maxRotate * 2;
+        const rotateX = (0.5 - y) * maxRotate * 2;
+        card.style.transform = `rotateX(${rotateX}deg) rotateY(${rotateY}deg) translateY(-2px)`;
+      });
+      card.addEventListener("mouseleave", () => {
+        card.style.transform = "";
+      });
+    });
+  }
+
+  async function loadModels() {
+    try {
+      const res = await fetch("/v1/models");
+      const data = await res.json();
+      updateModelChips();
+      setStatus("Ready. Upload an image and run all six models.");
+    } catch (err) {
+      setStatus(`Failed to load model metadata: ${err.message}`);
+    }
+  }
+
+  el.imageInput.addEventListener("change", (e) => {
+    setPreview(e.target.files?.[0]);
+  });
+
+  el.dropzone.addEventListener("click", () => {
+    el.imageInput.click();
+  });
+
+  el.dropzone.addEventListener("dragover", (e) => {
+    e.preventDefault();
+    el.dropzone.classList.add("ring-2", "ring-imperial-red/30");
+  });
+  el.dropzone.addEventListener("dragleave", () => {
+    el.dropzone.classList.remove("ring-2", "ring-imperial-red/30");
+  });
+  el.dropzone.addEventListener("drop", (e) => {
+    e.preventDefault();
+    el.dropzone.classList.remove("ring-2", "ring-imperial-red/30");
+    const file = e.dataTransfer.files?.[0];
+    if (file) {
+      const dt = new DataTransfer();
+      dt.items.add(file);
+      el.imageInput.files = dt.files;
+      setPreview(file);
+    }
+  });
+
+  el.question.addEventListener("input", updateCharCount);
+  el.question.addEventListener("focus", loadQuestionSuggestions, { once: true });
+
+  document.querySelectorAll(".model-chip").forEach((chip) => {
+    chip.addEventListener("click", () => {
+      const variant = chip.dataset.model;
+      if (selectedModels.has(variant)) selectedModels.delete(variant);
+      else selectedModels.add(variant);
+      if (selectedModels.size === 0) {
+        selectedModels = new Set(MODEL_ORDER);
+      }
+      updateModelChips();
+    });
+  });
+
+  el.resetBtn.addEventListener("click", () => {
+    selectedModels = new Set(MODEL_ORDER);
+    el.question.value = "";
+    el.imageInput.value = "";
+    setPreview(null);
+    updateCharCount();
+    updateModelChips();
+    el.resultsGrid.innerHTML = "";
+    setStatus("Reset complete.");
+  });
+
+  el.runBtn.addEventListener("click", async () => {
+    if (!currentImageFile) {
+      setStatus("Please upload an image first.");
+      return;
+    }
+    if (!el.question.value.trim()) {
+      setStatus("Please enter a question.");
+      return;
+    }
+    if (selectedModels.size === 0) {
+      setStatus("Please select at least one model.");
+      return;
+    }
+
+    el.runBtn.disabled = true;
+    el.runBtn.querySelector("span").textContent = "Running...";
+    setStatus("Running all selected models...");
+
+    try {
+      const formData = new FormData();
+      formData.append("question", el.question.value.trim());
+      formData.append("model_names", JSON.stringify(Array.from(selectedModels)));
+      formData.append("image", currentImageFile);
+
+      const res = await fetch("/v1/predict", { method: "POST", body: formData });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data?.detail || "Prediction failed");
+      }
+      renderModelGrid(data.results || [], data.question || el.question.value.trim(), data.summary);
+      applyTiltEffect(".tilt-card", 5);
+      setStatus(`Done. ${data.summary?.success_count ?? 0} models succeeded.`);
+    } catch (err) {
+      setStatus(err.message || "Prediction failed");
+    } finally {
+      el.runBtn.disabled = false;
+      el.runBtn.querySelector("span").textContent = "Run Comparison";
+    }
+  });
+
+  updateCharCount();
+  updateModelChips();
+  loadModels();
+  loadQuestionSuggestions();
+  renderModelGrid([], "", null);
+  applyTiltEffect(".tilt-card", 5);
+</script>
+
+</body></html>
