@@ -922,9 +922,23 @@ def train(args):
             lora_dropout=float(config['model_b'].get('lora_dropout', 0.05)),
             lora_target_modules=config['model_b'].get('lora_target_modules'),
         )
-        b2_checkpoint = select_best_adapter_checkpoint(config['train'].get('b2_output_dir', './checkpoints/B2'))
-        print(f"[INFO] DPO sẽ khởi tạo từ B2 checkpoint: {b2_checkpoint}")
-        model, processor = wrapper.load_model(adapter_path=str(b2_checkpoint), is_trainable=True)
+        explicit_b2_checkpoint = (
+            config.get('train', {}).get('b2_checkpoint')
+            or os.environ.get('B2_CHECKPOINT_PATH')
+        )
+        if explicit_b2_checkpoint:
+            b2_checkpoint = Path(explicit_b2_checkpoint).expanduser().resolve()
+            if not b2_checkpoint.exists():
+                raise FileNotFoundError(f"Không tìm thấy B2 checkpoint được chỉ định: {b2_checkpoint}")
+            print(f"[INFO] DPO sẽ khởi tạo từ B2 checkpoint chỉ định: {b2_checkpoint}")
+        else:
+            b2_checkpoint = select_best_adapter_checkpoint(config['train'].get('b2_output_dir', './checkpoints/B2'))
+            print(f"[INFO] DPO sẽ khởi tạo từ B2 checkpoint: {b2_checkpoint}")
+        try:
+            model, processor = wrapper.load_model(adapter_path=str(b2_checkpoint), is_trainable=True)
+        except Exception as exc:
+            print(f"[WARNING] Không load được B2 checkpoint, fallback sang base LLaVA-Med + LoRA mới: {exc}")
+            model, processor = wrapper.load_model(adapter_path=None, is_trainable=True)
         if not config['train'].get('dpo_train_mlp_lora', False):
             frozen_lora = 0
             for name, param in model.named_parameters():
