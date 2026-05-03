@@ -1,1 +1,0 @@
-c98f5538f0aec6647debedbbd941893893b90bb36c9273c0e9c6cecafde6476d  ../b2_best_ckpt.tar.gz

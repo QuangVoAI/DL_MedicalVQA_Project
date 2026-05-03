@@ -306,10 +306,25 @@ def _select_best_b2_checkpoint(checkpoint_root: Path) -> Optional[Path]:
     if not checkpoint_root.exists():
         return None
 
+    def _is_valid_adapter_checkpoint(path: Path) -> bool:
+        adapter_cfg = path / "adapter_config.json"
+        adapter_weights = path / "adapter_model.safetensors"
+        if not adapter_cfg.exists() or not adapter_weights.exists():
+            return False
+        try:
+            from safetensors import safe_open
+            with safe_open(str(adapter_weights), framework="pt", device="cpu") as f:
+                return len(f.keys()) > 0
+        except Exception as exc:
+            print(f"[WARNING] Skip invalid adapter checkpoint {path}: {exc}")
+            return False
+
     best_dir: Optional[Path] = None
     best_metric: Optional[float] = None
 
     for ckpt_dir in sorted(checkpoint_root.glob("checkpoint-*")):
+        if not _is_valid_adapter_checkpoint(ckpt_dir):
+            continue
         state_file = ckpt_dir / "trainer_state.json"
         if not state_file.exists():
             continue
@@ -343,7 +358,7 @@ def _select_best_b2_checkpoint(checkpoint_root: Path) -> Optional[Path]:
     if best_dir is not None:
         return best_dir
 
-    checkpoints = sorted(checkpoint_root.glob("checkpoint-*"))
+    checkpoints = [ckpt for ckpt in sorted(checkpoint_root.glob("checkpoint-*")) if _is_valid_adapter_checkpoint(ckpt)]
     return checkpoints[-1] if checkpoints else None
 
 

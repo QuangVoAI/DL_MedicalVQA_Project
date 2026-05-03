@@ -107,12 +107,25 @@ def select_best_adapter_checkpoint(checkpoint_root: str):
     if not checkpoint_root.exists():
         raise FileNotFoundError(f"Không tìm thấy thư mục checkpoint: {checkpoint_root}")
 
+    def _is_valid_adapter_checkpoint(path: Path) -> bool:
+        adapter_cfg = path / "adapter_config.json"
+        adapter_weights = path / "adapter_model.safetensors"
+        if not adapter_cfg.exists() or not adapter_weights.exists():
+            return False
+        try:
+            from safetensors import safe_open
+            with safe_open(str(adapter_weights), framework="pt", device="cpu") as f:
+                return len(f.keys()) > 0
+        except Exception as exc:
+            print(f"[WARN] Bỏ qua checkpoint lỗi {path}: {exc}")
+            return False
+
     checkpoint_dirs = sorted(
         p for p in checkpoint_root.glob("checkpoint-*")
-        if (p / "adapter_config.json").exists()
+        if _is_valid_adapter_checkpoint(p)
     )
     if not checkpoint_dirs:
-        raise FileNotFoundError(f"Không có adapter checkpoint trong {checkpoint_root}")
+        raise FileNotFoundError(f"Không có adapter checkpoint hợp lệ trong {checkpoint_root}")
 
     for state_file in sorted(checkpoint_root.glob("checkpoint-*/trainer_state.json"), reverse=True):
         try:
@@ -125,7 +138,7 @@ def select_best_adapter_checkpoint(checkpoint_root: str):
             best_dir = Path(best_path.replace("./", ""))
             if not best_dir.is_absolute():
                 best_dir = Path.cwd() / best_dir
-            if (best_dir / "adapter_config.json").exists():
+            if _is_valid_adapter_checkpoint(best_dir):
                 return best_dir.resolve()
 
     return checkpoint_dirs[-1].resolve()
