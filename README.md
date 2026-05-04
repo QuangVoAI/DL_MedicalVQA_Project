@@ -1,14 +1,3 @@
----
-title: Medical VQA
-emoji: 🩺
-colorFrom: blue
-colorTo: green
-sdk: docker
-app_port: 7860
-pinned: false
-license: mit
----
-
 # Vietnamese Medical VQA
 
 Medical Visual Question Answering project for Vietnamese medical images. The system compares modular VQA models, LLaVA-Med based models, alignment variants, and a merged adapter created with Model Soup.
