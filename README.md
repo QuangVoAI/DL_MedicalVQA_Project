@@ -20,7 +20,7 @@ The app supports image upload, Vietnamese question input, model selection, and s
 
 ## Model Variants
 
-| Variant | Description | Artifact |
+| Variant | Description | HuggingFace Model |
 |---|---|---|
 | A1 LSTM | DenseNet-121 XRV + PhoBERT + LSTM decoder | `SpringWang08/medical-vqa-a1` |
 | A2 Transformer | DenseNet-121 XRV + PhoBERT + Transformer decoder | `SpringWang08/medical-vqa-a2` |
