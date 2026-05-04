@@ -7,7 +7,10 @@ ENV DEBIAN_FRONTEND=noninteractive \
     HF_HOME=/hf_cache \
     HUGGINGFACE_HUB_CACHE=/hf_cache/hub \
     TRANSFORMERS_CACHE=/hf_cache/transformers \
-    WEB_PRELOAD_MODELS=1
+    GRADIO_SERVER_NAME=0.0.0.0 \
+    GRADIO_SERVER_PORT=7860 \
+    ANSWER_REWRITE_MODEL_ID=Qwen/Qwen2.5-1.5B-Instruct \
+    ANSWER_REWRITE_USE_4BIT=1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
@@ -37,6 +40,6 @@ COPY . /app
 
 RUN mkdir -p /hf_cache
 
-EXPOSE 8000
+EXPOSE 7860
 
-CMD ["python3", "-m", "uvicorn", "web.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+CMD ["python3", "app.py"]

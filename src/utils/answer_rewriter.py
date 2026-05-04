@@ -23,6 +23,114 @@ class RewriteConfig:
     max_words: int = 10
 
 
+_REWRITE_STYLE_BY_MODEL = {
+    "A1": {
+        "vi": "Diễn đạt đơn giản, trực tiếp, gần với đáp án gốc.",
+        "en": "Use simple, direct wording close to the raw answer.",
+    },
+    "A2": {
+        "vi": "Diễn đạt như một quan sát ngắn trên hình ảnh.",
+        "en": "Word it as a short imaging observation.",
+    },
+    "B1": {
+        "vi": "Diễn đạt tự nhiên, mềm hơn, dễ đọc.",
+        "en": "Use natural, softer, easy-to-read wording.",
+    },
+    "B2": {
+        "vi": "Diễn đạt hay hơn A1/A2, theo phong cách lâm sàng súc tích.",
+        "en": "Use stronger concise clinical wording than A1/A2.",
+    },
+    "DPO": {
+        "vi": "Diễn đạt hay nhất theo hướng thận trọng, chuyên nghiệp.",
+        "en": "Use the most careful, professional wording.",
+    },
+    "PPO": {
+        "vi": "Diễn đạt hay nhất theo hướng rõ ràng, mạch lạc.",
+        "en": "Use the clearest, most polished wording.",
+    },
+    "SOUP": {
+        "vi": "Diễn đạt cân bằng giữa lâm sàng, thận trọng và rõ ràng.",
+        "en": "Use balanced clinical, careful, and clear wording.",
+    },
+}
+
+
+_MODEL_SPECIFIC_EXAMPLES = {
+    "A1": {
+        "vi": {
+            "question": "Ảnh có khối u không?",
+            "answer": "có",
+            "rewrite": "Có, có khối u.",
+        },
+        "en": {
+            "question": "Is there a mass?",
+            "answer": "yes",
+            "rewrite": "Yes, there is a mass.",
+        },
+    },
+    "A2": {
+        "vi": {
+            "question": "Ảnh có khối u không?",
+            "answer": "có",
+            "rewrite": "Có, thấy khối u trên ảnh.",
+        },
+        "en": {
+            "question": "Is there a mass?",
+            "answer": "yes",
+            "rewrite": "Yes, a mass is seen.",
+        },
+    },
+    "B2": {
+        "vi": {
+            "question": "Ảnh có khối u không?",
+            "answer": "có",
+            "rewrite": "Có, hình ảnh gợi ý khối u.",
+        },
+        "en": {
+            "question": "Is there a mass?",
+            "answer": "yes",
+            "rewrite": "Yes, imaging suggests a mass.",
+        },
+    },
+    "DPO": {
+        "vi": {
+            "question": "Ảnh có khối u không?",
+            "answer": "có",
+            "rewrite": "Có, có dấu hiệu gợi ý khối u.",
+        },
+        "en": {
+            "question": "Is there a mass?",
+            "answer": "yes",
+            "rewrite": "Yes, findings suggest a mass.",
+        },
+    },
+    "PPO": {
+        "vi": {
+            "question": "Ảnh có khối u không?",
+            "answer": "có",
+            "rewrite": "Có, kết quả gợi ý khối u rõ.",
+        },
+        "en": {
+            "question": "Is there a mass?",
+            "answer": "yes",
+            "rewrite": "Yes, results clearly suggest a mass.",
+        },
+    },
+    "SOUP": {
+        "vi": {
+            "question": "Ảnh có khối u không?",
+            "answer": "có",
+            "rewrite": "Có, hình ảnh gợi ý khối u rõ.",
+        },
+        "en": {
+            "question": "Is there a mass?",
+            "answer": "yes",
+            "rewrite": "Yes, imaging clearly suggests a mass.",
+        },
+    },
+}
+
+
 class MedicalAnswerRewriter:
     """
     Rewrite lớp cuối cho VQA output.
@@ -126,41 +234,82 @@ class MedicalAnswerRewriter:
             self._tokenizer = tokenizer
             self._model = model
             self._ready = True
-            print(f"[INFO] ✅ Answer rewriter ready: {self.config.model_id}")
+            print(f"[INFO] Answer rewriter ready: {self.config.model_id}")
         except Exception as exc:
             self._ready = False
-            print(f"[WARNING] ❌ Answer rewriter load failed: {exc}")
+            print(f"[WARNING] Answer rewriter load failed: {exc}")
 
-    def _build_messages(self, question: str, answer: str, language: str = "vi") -> list[dict[str, str]]:
+    def _get_style_instruction(self, source_model: str | None, language: str) -> str:
+        if not source_model:
+            return ""
+        style = _REWRITE_STYLE_BY_MODEL.get(source_model.upper())
+        if not style:
+            return ""
+        lang_key = "en" if language.lower().startswith("en") else "vi"
+        return style[lang_key]
+
+    def _get_model_specific_example(self, source_model: str | None, language: str) -> dict[str, str] | None:
+        if not source_model:
+            return None
+        examples = _MODEL_SPECIFIC_EXAMPLES.get(source_model.upper())
+        if not examples:
+            return None
+        lang_key = "en" if language.lower().startswith("en") else "vi"
+        return examples[lang_key]
+
+    def _build_messages(
+        self,
+        question: str,
+        answer: str,
+        language: str = "vi",
+        source_model: str | None = None,
+    ) -> list[dict[str, str]]:
+        style_instruction = self._get_style_instruction(source_model, language)
+        model_example = self._get_model_specific_example(source_model, language)
         system_prompt = (
             "Bạn là bộ biên tập câu trả lời cho hệ thống Medical VQA. "
-            "Nhiệm vụ của bạn là viết lại câu trả lời gốc thành một câu ngắn, tự nhiên, "
-            "rõ nghĩa hơn nhưng KHÔNG thêm thông tin mới ngoài nội dung đã có. "
-            "Giới hạn tối đa 10 từ. Chỉ trả về câu trả lời cuối cùng."
+            "Nhiệm vụ của bạn là mở rộng đáp án gốc thành một câu trả lời đầy đủ, "
+            "tự nhiên và rõ nghĩa hơn, nhưng vẫn phải bám sát đáp án gốc. "
+            "KHÔNG thêm thông tin y khoa mới, KHÔNG suy diễn ngoài đáp án gốc. "
+            "Có thể dùng câu hỏi để xác định đối tượng y khoa đang được hỏi, "
+            "nhưng đáp án gốc quyết định ý nghĩa đúng/sai/có/không. "
+            "Nếu nhiều model có cùng đáp án gốc, vẫn dùng phong cách riêng của model hiện tại. "
+            "CÂU TRẢ LỜI BẮT BUỘC PHẢI DƯỚI 10 TỪ, ÍT NHẤT 3 TỪ. "
+            "Chỉ trả về câu trả lời cuối cùng."
         )
+        if style_instruction:
+            system_prompt += f" Phong cách riêng cho model này: {style_instruction}"
+
         if language.lower().startswith("en"):
             system_prompt = (
                 "You are an editor for a Medical VQA system. "
-                "Rewrite the raw answer into a short, natural, clearer sentence "
-                "without adding facts beyond the original answer. "
-                "Use at most 10 words. Return only the final answer."
+                "Expand the raw answer into a fuller, natural, clearer answer "
+                "while staying strictly based on the raw answer. "
+                "Do not add new medical facts or infer beyond the raw answer. "
+                "You may use the question to identify the medical target, "
+                "but the raw answer controls yes/no/presence/absence. "
+                "If several models share the same raw answer, still use this model's wording style. "
+                "THE ANSWER MUST BE UNDER 10 WORDS and at least 3 words. "
+                "Return only the final answer."
             )
+            if style_instruction:
+                system_prompt += f" Model-specific wording style: {style_instruction}"
 
         examples = [
             {
                 "question": "Ảnh này có tràn dịch màng phổi không?",
                 "answer": "không",
-                "rewrite": "Không, không có tràn dịch màng phổi.",
+                "rewrite": "Không, không thấy tràn dịch màng phổi.",
             },
             {
                 "question": "Hình ảnh có tim to không?",
                 "answer": "có",
-                "rewrite": "Có, tim to.",
+                "rewrite": "Có, hình ảnh cho thấy tim to.",
             },
             {
                 "question": "Đây là loại ảnh gì?",
                 "answer": "x quang ngực",
-                "rewrite": "X-quang ngực.",
+                "rewrite": "Đây là ảnh X-quang ngực.",
             },
         ]
 
@@ -169,19 +318,22 @@ class MedicalAnswerRewriter:
                 {
                     "question": "Is there pleural effusion?",
                     "answer": "no",
-                    "rewrite": "No, no pleural effusion.",
+                    "rewrite": "No, pleural effusion is not seen.",
                 },
                 {
                     "question": "Is the heart enlarged?",
                     "answer": "yes",
-                    "rewrite": "Yes, enlarged heart.",
+                    "rewrite": "Yes, the heart appears enlarged.",
                 },
                 {
                     "question": "What modality is this?",
                     "answer": "chest x ray",
-                    "rewrite": "Chest X-ray.",
+                    "rewrite": "This is a chest X-ray.",
                 },
             ]
+
+        if model_example:
+            examples.append(model_example)
 
         messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
         for ex in examples:
@@ -193,16 +345,35 @@ class MedicalAnswerRewriter:
             )
             messages.append({"role": "assistant", "content": ex["rewrite"]})
 
-        user_prompt = f"Câu hỏi: {question}\nĐáp án gốc: {answer}\nViết lại ngắn gọn, tự nhiên, không thêm thông tin mới."
+        user_prompt = (
+            f"Câu hỏi: {question}\n"
+            f"Đáp án gốc: {answer}\n"
+            f"Model nguồn: {source_model or 'unknown'}\n"
+            "Viết lại thành câu đầy đủ hơn, tự nhiên hơn, dưới 10 từ. "
+            "CHỈ DÙNG THÔNG TIN TỪ ĐÁP ÁN GỐC."
+        )
+        if style_instruction:
+            user_prompt += f"\nPhong cách diễn đạt: {style_instruction}"
+
         if language.lower().startswith("en"):
             user_prompt = (
                 f"Question: {question}\nRaw answer: {answer}\n"
-                "Rewrite it into a short, natural answer without adding new facts."
+                f"Source model: {source_model or 'unknown'}\n"
+                "Rewrite it as a fuller, natural answer under 10 words. "
+                "Use only information from the raw answer."
             )
+            if style_instruction:
+                user_prompt += f"\nWording style: {style_instruction}"
         messages.append({"role": "user", "content": user_prompt})
         return messages
 
-    def rewrite(self, question: str, answer: str, language: str = "vi") -> str:
+    def rewrite(
+        self,
+        question: str,
+        answer: str,
+        language: str = "vi",
+        source_model: str | None = None,
+    ) -> str:
         """
         Rewrite câu trả lời để tự nhiên hơn.
         Nếu rewrite model không sẵn sàng, trả về output đã postprocess.
@@ -216,7 +387,12 @@ class MedicalAnswerRewriter:
             return fallback
 
         try:
-            messages = self._build_messages(question=question, answer=answer, language=language)
+            messages = self._build_messages(
+                question=question,
+                answer=answer,
+                language=language,
+                source_model=source_model,
+            )
             prompt = self._tokenizer.apply_chat_template(
                 messages,
                 tokenize=False,
@@ -242,3 +418,21 @@ class MedicalAnswerRewriter:
         except Exception as exc:
             print(f"[WARNING] Rewrite failed: {exc}")
             return fallback
+
+
+def rewrite_final_answer(
+    question: str,
+    answer: str,
+    language: str = "vi",
+    source_model: str | None = None,
+) -> str:
+    """
+    Helper tiện dùng trong notebook / web.
+    """
+    rewriter = MedicalAnswerRewriter()
+    return rewriter.rewrite(
+        question=question,
+        answer=answer,
+        language=language,
+        source_model=source_model,
+    )

@@ -21,7 +21,7 @@ try:
     semantic_model = SentenceTransformer('all-MiniLM-L6-v2')
 except Exception as e:
     semantic_model = None
-    print(f"Warning: Could not load SentenceTransformer: {e}")
+    print(f"[WARNING] Could not load SentenceTransformer: {e}")
 
 # 2. BERTScore
 try:
@@ -34,7 +34,7 @@ except ImportError:
     bert_scorer = None
 except Exception as e:
     bert_scorer = None
-    print(f"Warning: Could not load BERTScorer: {e}")
+    print(f"[WARNING] Could not load BERTScorer: {e}")
 
 # 3. ROUGE-L
 try:
@@ -42,9 +42,8 @@ try:
     rouge_l_scorer = rs.RougeScorer(['rougeL'], use_stemmer=True)
 except Exception as e:
     rouge_l_scorer = None
-    print(f"Warning: Could not load rouge-score: {e}")
+    print(f"[WARNING] Could not load rouge-score: {e}")
 
-# [FIX] Import from the local text_utils instead of non-existent src.data.preprocessing
 from .text_utils import normalize_answer, majority_answer
 
 def compute_rouge_l(pred: str, refs) -> float:

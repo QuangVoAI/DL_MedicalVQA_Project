@@ -11,7 +11,7 @@ ckpt_dir: "checkpoints/medical_vqa"
 # ── Data ──
 data:
   dataset_name: "slake_vqa_rad_merged"
-  hf_dataset: "SpringWang08/medical-vqa-vi"        # [NEW] Dataset trên Hub
+  hf_dataset: "SpringWang08/medical-vqa-vi"        #Dataset Huggingface
   use_hf_splits: true
   vqa_json: "data/merged_vqa_vi_cleaned.json"
   image_dir: "data/images"

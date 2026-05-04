@@ -58,7 +58,29 @@ wandb/
 
 # OS
 .DS_Store
+**/.DS_Store
 Thumbs.db
+
+# Microsoft Office temp files
+~$*.docx
+~$*.pptx
+~$*.xlsx
+~$*
+
+# Local reports / generated documents
+Report.docx
+
+# Jupyter notebooks used for local experiments
+predict.ipynb
+
+# Generated test samples
+Test_Prediction/
+
+# Local utility scripts not pushed
+INTEGRATION_GUIDE.py
+scripts/export_predictions.py
+scripts/compare_models.py
+scripts/merge_lora_adapters.py
 
 # Temporary scratch files
 scratch/

@@ -119,11 +119,11 @@ class MultiMetricEarlyStopping:
             if model is not None and self.save_dir:
                 self._save_checkpoint(model, epoch, metrics)
             if self.verbose:
-                print(f"✓ Epoch {epoch}: New best score {score:.4f}")
+                print(f"[INFO] Epoch {epoch}: new best score {score:.4f}")
         else:
             self.counter += 1
             if self.verbose:
-                print(f"✗ Epoch {epoch}: No improvement ({self.counter}/{self.patience})")
+                print(f"[INFO] Epoch {epoch}: no improvement ({self.counter}/{self.patience})")
         
         # Check if should stop
         if self.counter >= self.patience:
@@ -156,7 +156,7 @@ class MultiMetricEarlyStopping:
             json.dump(metrics, f, indent=2, default=str)
         
         if self.verbose:
-            print(f"  💾 Saved checkpoint to {save_path}")
+            print(f"[INFO] Saved checkpoint to {save_path}")
     
     def get_best_metrics(self):
         """Return best metrics found during training."""

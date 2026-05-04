@@ -59,9 +59,9 @@ class MedicalTranslator:
             self._vi2en_model = AutoModelForSeq2SeqLM.from_pretrained(vi2en_id).to("cpu")
             self._vi2en_model.eval()
             self._vi2en_ready = True
-            print("[INFO] ✅ Helsinki-NLP (Vi→En) đã sẵn sàng trên CPU")
+            print("[INFO] Helsinki-NLP Vi-En ready on CPU")
         except Exception as e:
-            print(f"[WARNING] ❌ Helsinki-NLP load thất bại: {e}")
+            print(f"[WARNING] Helsinki-NLP load failed: {e}")
         
         # ── 2. MedCrab En→Vi (4-bit trên GPU) ──
         try:
@@ -84,9 +84,9 @@ class MedicalTranslator:
             )
             self._en2vi_model.eval()
             self._en2vi_ready = True
-            print(f"[INFO] ✅ MedCrab-1.5B (En→Vi) đã sẵn sàng trên {self.gpu_device}")
+            print(f"[INFO] MedCrab-1.5B En-Vi ready on {self.gpu_device}")
         except Exception as e:
-            print(f"[WARNING] ❌ MedCrab load thất bại: {e}")
+            print(f"[WARNING] MedCrab load failed: {e}")
 
     # ── Vi → En ──
     def translate_vi2en(self, text):

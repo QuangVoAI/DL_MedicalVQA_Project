@@ -10,5 +10,6 @@ __pycache__/
 logs/
 results/
 scratch/
+checkpoints/
 logs.zip
 *.log
